@@ -596,7 +596,14 @@ def process_single_ligand(
                 shutil.rmtree(path, ignore_errors=True)
 
 
-def process_cif_file(cif_path, tmp_root="./tmp3", keep_complexes=False, complex_cache_dir=None):
+def process_cif_file(
+    cif_path,
+    tmp_root="./tmp3",
+    keep_complexes=False,
+    complex_cache_dir=None,
+    run_all_mode=True,
+    run_random_mode=True,
+):
     sample_name = strip_cif_gz_suffix(cif_path)
     try:
         units, doc = load_coordinate_units(cif_path)
@@ -611,9 +618,16 @@ def process_cif_file(cif_path, tmp_root="./tmp3", keep_complexes=False, complex_
         receptor_ligand_map = parse_receptor_ligand_map(receptor_block)
 
         ligand_indices = list(range(1, len(units)))
-        all_results = []
-        for ligand_index in ligand_indices:
-            all_results.append(
+        random_ligand_index = random.choice(ligand_indices) if ligand_indices else None
+        selected_indices = []
+        if run_all_mode:
+            selected_indices.extend(ligand_indices)
+        elif run_random_mode and random_ligand_index is not None:
+            selected_indices.append(random_ligand_index)
+
+        selected_results = []
+        for ligand_index in selected_indices:
+            selected_results.append(
                 process_single_ligand(
                     cif_path=cif_path,
                     sample_name=sample_name,
@@ -626,11 +640,22 @@ def process_cif_file(cif_path, tmp_root="./tmp3", keep_complexes=False, complex_
                 )
             )
 
-        random_result = random.choice(all_results) if all_results else None
+        all_rows = [item["csv_row"] for item in selected_results] if run_all_mode else []
+        random_row = None
+        if run_random_mode and random_ligand_index is not None:
+            if run_all_mode:
+                result_by_index = {
+                    item["log_item"]["ligand_index"]: item for item in selected_results
+                }
+                random_result = result_by_index.get(random_ligand_index)
+                random_row = random_result["csv_row"] if random_result else None
+            elif selected_results:
+                random_row = selected_results[0]["csv_row"]
+
         return {
-            "all_rows": [item["csv_row"] for item in all_results],
-            "random_row": random_result["csv_row"] if random_result else None,
-            "log_items": [item["log_item"] for item in all_results],
+            "all_rows": all_rows,
+            "random_row": random_row,
+            "log_items": [item["log_item"] for item in selected_results],
         }
     except Exception as e:
         print(f"Error processing {cif_path}: {e}", file=sys.stderr)
@@ -669,9 +694,10 @@ def write_log_entries(log_file, log_items):
 def callback(return_data, tbar, all_writer, random_writer, log_file):
     if return_data:
         for row in return_data.get("all_rows", []):
-            all_writer.writerow(row)
+            if all_writer:
+                all_writer.writerow(row)
         random_row = return_data.get("random_row")
-        if random_row:
+        if random_row and random_writer:
             random_writer.writerow(random_row)
         write_log_entries(log_file, return_data.get("log_items", []))
     tbar.update(1)
@@ -679,14 +705,19 @@ def callback(return_data, tbar, all_writer, random_writer, log_file):
 
 def process_input_folder(
     input_dir,
-    output_all_file,
-    output_random_file,
+    output_all_file=None,
+    output_random_file=None,
     n_jobs=-1,
     log_file=None,
     tmp_root="./tmp3",
     keep_complexes=False,
     complex_cache_dir=None,
 ):
+    run_all_mode = bool(output_all_file)
+    run_random_mode = bool(output_random_file)
+    if not run_all_mode and not run_random_mode:
+        raise ValueError("At least one of --output-all or --output-random must be provided")
+
     if n_jobs == -1:
         n_jobs = max(1, cpu_count() - 1)
 
@@ -697,13 +728,16 @@ def process_input_folder(
     os.makedirs(tmp_root, exist_ok=True)
     log = open(log_file, "w") if log_file else None
 
-    with open(output_all_file, "w", newline="") as all_file, open(
-        output_random_file, "w", newline=""
-    ) as random_file:
-        all_writer = csv.writer(all_file)
-        random_writer = csv.writer(random_file)
-        all_writer.writerow(FIXED_HEADERS)
-        random_writer.writerow(FIXED_HEADERS)
+    all_file = open(output_all_file, "w", newline="") if run_all_mode else None
+    random_file = open(output_random_file, "w", newline="") if run_random_mode else None
+
+    try:
+        all_writer = csv.writer(all_file) if all_file else None
+        random_writer = csv.writer(random_file) if random_file else None
+        if all_writer:
+            all_writer.writerow(FIXED_HEADERS)
+        if random_writer:
+            random_writer.writerow(FIXED_HEADERS)
 
         with tqdm(total=total_files, desc="Processing CIF files") as tbar:
             partial_callback = partial(
@@ -719,19 +753,33 @@ def process_input_folder(
                 for cif_path in cif_files:
                     result = pool.apply_async(
                         func=process_cif_file,
-                        args=(cif_path, tmp_root, keep_complexes, complex_cache_dir),
+                        args=(
+                            cif_path,
+                            tmp_root,
+                            keep_complexes,
+                            complex_cache_dir,
+                            run_all_mode,
+                            run_random_mode,
+                        ),
                         callback=partial_callback,
                     )
                     results.append(result)
 
                 for result in results:
                     result.wait()
+    finally:
+        if all_file:
+            all_file.close()
+        if random_file:
+            random_file.close()
 
     if log:
         log.close()
 
-    print(f"All-ligand results saved to {output_all_file}")
-    print(f"Random-ligand results saved to {output_random_file}")
+    if run_all_mode:
+        print(f"All-ligand results saved to {output_all_file}")
+    if run_random_mode:
+        print(f"Random-ligand results saved to {output_random_file}")
 
 
 def main():
@@ -753,12 +801,12 @@ def main():
     )
     parser.add_argument(
         "--output-all",
-        default="PLIP_metadata_all_ligands.csv",
+        default=None,
         help="Output CSV for PLIP results from all ligands",
     )
     parser.add_argument(
         "--output-random",
-        default="PLIP_metadata_random_ligand.csv",
+        default=None,
         help="Output CSV for PLIP results from one random ligand per CIF file",
     )
     parser.add_argument(
