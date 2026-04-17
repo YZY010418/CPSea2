@@ -1,0 +1,4 @@
+## CPSea-2: Combine linear and cyclic peptide data with more plausible structure
+The idea of constructing cyclic peptides
+* **FindCPBase**. To synthesize complex structure data between linear peptide ligands and protein receptors. We provide scripts for both AFDB and PDB, where PDB have more complicated processings because there are more variations.
+* **ApplyCPCapping**. First, plausible conformations of the capping structure of cyclic peptides are sampled. To merge the "CPBase" and "CPCapping" by searching the most aligned relative position of terminal amides, and check if additional clashes are introduced. This algorithm can be used both in the data preparation and after model generation.
