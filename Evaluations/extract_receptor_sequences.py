@@ -60,14 +60,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Extract the receptor sequence from the first structure block in "
-            "each .cif.gz file and write the results to a FASTA file."
+            "each .cif or .cif.gz file and write the results to a FASTA file."
         )
     )
     parser.add_argument(
         "-i",
         "--input",
         required=True,
-        help="Directory containing .cif.gz files.",
+        help="Directory containing .cif or .cif.gz files.",
     )
     parser.add_argument(
         "-o",
@@ -93,11 +93,23 @@ def normalize_file_stem(path: Path) -> str:
     name = path.name
     if name.endswith(".cif.gz"):
         return name[:-7]
+    if name.endswith(".cif"):
+        return name[:-4]
     return path.stem
 
 
 def collect_input_files(input_dir: Path) -> List[Path]:
-    return sorted(path for path in input_dir.rglob("*.cif.gz") if path.is_file())
+    return sorted(
+        path
+        for path in input_dir.rglob("*")
+        if path.is_file() and (path.name.endswith(".cif") or path.name.endswith(".cif.gz"))
+    )
+
+
+def open_cif_text(path: Path):
+    if path.name.endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
+    return open(path, "rt", encoding="utf-8", errors="replace")
 
 
 def extract_first_data_block(lines: Sequence[str]) -> List[str]:
@@ -217,7 +229,7 @@ def extract_sequence_from_cif_gz(path: Path) -> Tuple[str, Optional[str], Option
     fasta_id = normalize_file_stem(path)
 
     try:
-        with gzip.open(path, "rt", encoding="utf-8", errors="replace") as handle:
+        with open_cif_text(path) as handle:
             lines = handle.read().splitlines()
 
         first_block = extract_first_data_block(lines)
@@ -256,7 +268,7 @@ def main() -> None:
 
     cif_paths = collect_input_files(input_dir)
     if not cif_paths:
-        raise SystemExit(f"No .cif.gz files found under: {input_dir}")
+        raise SystemExit(f"No .cif or .cif.gz files found under: {input_dir}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     error_path = output_path.with_suffix(output_path.suffix + ".errors.tsv")
