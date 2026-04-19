@@ -472,6 +472,8 @@ def run_plip_and_parse(complex_pdb, out_dir):
         "-o",
         out_dir,
         "--silent",
+        "--maxthreads",
+        "1",
     ]
 
     completed = subprocess.run(
