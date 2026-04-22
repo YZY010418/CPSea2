@@ -14,6 +14,21 @@ def create_capping(smiles):
     AllChem.EmbedMolecule(mol) 
     return mol
 
+def set_pdb_info(mol, chain_id="A", residue_name="UNL", residue_number=1):
+    atom_counts = {}
+    for atom in mol.GetAtoms():
+        symbol = atom.GetSymbol()
+        atom_counts[symbol] = atom_counts.get(symbol, 0) + 1
+        atom_name = f"{symbol}{atom_counts[symbol]}"
+        atom.SetMonomerInfo(Chem.AtomPDBResidueInfo(
+            atomName=atom_name,
+            serialNumber=atom.GetIdx() + 1,
+            residueName=residue_name,
+            residueNumber=residue_number,
+            chainId=chain_id,
+            isHeteroAtom=True,
+        ))
+
 def generate_and_optimize_conformers(mol, num_conformers):
     params = AllChem.ETKDGv3()
     params.randomSeed = 42  
@@ -32,7 +47,7 @@ def generate_and_optimize_conformers(mol, num_conformers):
     
     return mol
 
-def save_all_conformers(mol, output_path):
+def save_all_conformers(mol, output_path, output_dir, name):
     # Get all energies
     energies = []
     for conf_id in range(mol.GetNumConformers()):
@@ -63,14 +78,17 @@ def save_all_conformers(mol, output_path):
 def main(name, smiles, num_conformers, output_dir):
     print(f"CappingGen with RDKit version {rdkit.__version__}")
     try:
+        os.makedirs(output_dir, exist_ok=True)
+
         Capping = create_capping(smiles)
         print(f"Atom count: {Capping.GetNumAtoms()}")
 
         optimized_mol = generate_and_optimize_conformers(Capping, num_conformers)
         print(f"{optimized_mol.GetNumConformers()} conformers generated and optimized")
 
+        set_pdb_info(optimized_mol)
         output_all = os.path.join(output_dir, f"{name}_conformers")
-        save_all_conformers(optimized_mol, output_all)
+        save_all_conformers(optimized_mol, output_all, output_dir, name)
 
     except Exception as e:
         print(f"error during CappingGen: {str(e)}")
