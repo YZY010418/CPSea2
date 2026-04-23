@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Batch-align cap conformers to CPSea multi-ligand receptor CIF files.
+"""Batch-align relaxed SDF cap conformers to CPSea multi-ligand receptor CIF files.
 
 The script reads base ``.cif``/``.cif.gz`` files that contain one receptor block
-and multiple ligand blocks, aligns cap SDF/CIF conformers to every ligand
-terminal amide pair, checks receptor clashes, and writes one capped ligand +
-receptor complex per match.
+and multiple ligand blocks, aligns cap SDF conformers to every ligand terminal
+amide pair, checks receptor clashes, and writes one capped ligand + receptor
+PDB per match.
 """
 
 import argparse
@@ -64,7 +64,7 @@ class TerminalDefinition:
 
 def strip_structure_suffix(path):
     name = Path(path).name
-    for suffix in (".cif.gz", ".mmcif.gz", ".cif", ".mmcif", ".sdf", ".sd", ".pdb"):
+    for suffix in (".cif.gz", ".cif", ".sdf", ".sd", ".pdb"):
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return Path(name).stem
@@ -420,13 +420,6 @@ def read_sdf_structure(path):
     return atom_array
 
 
-def read_structure_any(path):
-    suffix = Path(path).suffix.lower()
-    if suffix in {".sdf", ".sd"}:
-        return read_sdf_structure(path)
-    return read_structure(str(path))
-
-
 def residue_original_key(row):
     return (
         row.get("label_asym_id", ""),
@@ -609,10 +602,10 @@ def load_cap_numbering(yaml_path, cap_name=None):
 def collect_cap_files(cap_dir):
     files = []
     for path in sorted(Path(cap_dir).iterdir()):
-        if path.is_file() and path.name.lower().endswith((".sdf", ".sd", ".cif", ".mmcif", ".pdb")):
+        if path.is_file() and path.name.lower().endswith((".sdf", ".sd")):
             files.append(path)
     if not files:
-        raise ValueError(f"No .sdf, .cif, or .pdb cap files found in {cap_dir}")
+        raise ValueError(f"No .sdf/.sd cap files found in {cap_dir}")
     return files
 
 
@@ -622,7 +615,7 @@ def build_cap_index(cap_dir, cap_numbering):
     descriptors_by_mode = {mode: [] for mode in cap_numbering}
 
     for cap_file in collect_cap_files(cap_dir):
-        cap_struct = read_structure_any(str(cap_file))
+        cap_struct = read_sdf_structure(cap_file)
         cap_struct = cap_struct[cap_struct.element != "H"]
         for mode, atom_map in cap_numbering.items():
             coords = np.array(get_atoms_coords(cap_struct, atom_map["C_ter"] + atom_map["N_ter"]))
@@ -719,37 +712,15 @@ def terminal_atoms_for_mapping(cap_key, base_side, ace, first_res, nme, last_res
     return coords, targets
 
 
-def normalize_terminal_order(terminal_order):
-    aliases = {
-        "cter-to-nter": "cter-to-nter",
-        "cross": "cter-to-nter",
-        "first-c-last-n": "cter-to-nter",
-        "cter-to-cter": "cter-to-cter",
-        "same": "cter-to-cter",
-        "last-c-first-n": "cter-to-cter",
-    }
-    try:
-        return aliases[terminal_order]
-    except KeyError:
-        raise ValueError(f"Unsupported terminal order: {terminal_order}")
-
-
-def build_terminal_definition(chain_l, atom_map, terminal_order):
+def build_terminal_definition(chain_l, atom_map):
     residues = ordered_residues(chain_l)
     ace = find_unique_residue(residues, "ACE")
     nme = find_unique_residue(residues, "NME")
     first_res = residue_after(residues, ace, 1)
     last_res = residue_after(residues, nme, -1)
 
-    terminal_order = normalize_terminal_order(terminal_order)
-    if terminal_order == "cter-to-nter":
-        c_side = "first"
-        n_side = "last"
-    elif terminal_order == "cter-to-cter":
-        c_side = "last"
-        n_side = "first"
-    else:
-        raise ValueError(f"Unsupported terminal order: {terminal_order}")
+    c_side = "first"
+    n_side = "last"
 
     c_coords, c_targets = terminal_atoms_for_mapping("C_ter", c_side, ace, first_res, nme, last_res)
     n_coords, n_targets = terminal_atoms_for_mapping("N_ter", n_side, ace, first_res, nme, last_res)
@@ -785,7 +756,7 @@ def build_terminal_definition(chain_l, atom_map, terminal_order):
 
 
 def place_cap_on_ligand(cap_file, chain_l, atom_map, terminal_def):
-    cap_struct = read_structure_any(str(cap_file))
+    cap_struct = read_sdf_structure(cap_file)
     cap_struct.res_name = ["CAP" for _ in cap_struct.res_name]
     cap_struct = cap_struct[cap_struct.element != "H"]
 
@@ -885,68 +856,6 @@ def prefilter_candidates(mode_index, query_descriptor, approx_k, distance_cutoff
     return candidates
 
 
-def cif_value(value):
-    value = str(value)
-    if value == "":
-        return "?"
-    if any(ch.isspace() for ch in value) or value.startswith(("_", "#", ";")):
-        return shlex.quote(value)
-    return value
-
-
-def bond_value_order(order):
-    order = int(order)
-    if order == 2:
-        return "DOUB"
-    if order == 3:
-        return "TRIP"
-    return "SING"
-
-
-def bond_aromatic_flag(order):
-    return "Y" if int(order) == 4 else "N"
-
-
-def atom_site_row(atom_array, atom_index, atom_id, entity_id):
-    res_name = str(atom_array.res_name[atom_index]).strip() or "UNK"
-    atom_name = str(atom_array.atom_name[atom_index]).strip()
-    chain_id = str(atom_array.chain_id[atom_index]).strip() or "?"
-    res_id = int(atom_array.res_id[atom_index])
-    element = str(atom_array.element[atom_index]).strip()
-    x, y, z = atom_array.coord[atom_index]
-    group = "HETATM" if res_name == "CAP" else "ATOM"
-    return [
-        group,
-        element,
-        atom_name,
-        ".",
-        res_name,
-        chain_id,
-        str(entity_id),
-        str(res_id),
-        ".",
-        str(res_id),
-        res_name,
-        chain_id,
-        atom_name,
-        f"{float(x):.3f}",
-        f"{float(y):.3f}",
-        f"{float(z):.3f}",
-        "1",
-        str(atom_id),
-    ]
-
-
-def write_cif_loop(handle, tags, rows):
-    if not rows:
-        return
-    handle.write("#\nloop_\n")
-    for tag in tags:
-        handle.write(f"{tag}\n")
-    for row in rows:
-        handle.write(" ".join(cif_value(value) for value in row) + "\n")
-
-
 def save_complex_pdb(out_path, capped_ligand, receptor):
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1001,156 +910,6 @@ def save_complex_pdb(out_path, capped_ligand, receptor):
             write_conect_records(handle, bond_orders)
 
         handle.write("END\n")
-
-
-def save_complex_cif(out_path, capped_ligand, receptor):
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    atom_rows = []
-    ligand_keys = {}
-    atom_id = 1
-    for i in range(capped_ligand.array_length()):
-        atom_rows.append(atom_site_row(capped_ligand, i, atom_id, entity_id=1))
-        ligand_keys[i] = {
-            "chain_id": str(capped_ligand.chain_id[i]).strip() or "L",
-            "res_id": int(capped_ligand.res_id[i]),
-            "res_name": str(capped_ligand.res_name[i]).strip() or "UNK",
-            "atom_name": str(capped_ligand.atom_name[i]).strip(),
-        }
-        atom_id += 1
-
-    for i in range(receptor.array_length()):
-        atom_rows.append(atom_site_row(receptor, i, atom_id, entity_id=2))
-        atom_id += 1
-
-    chem_bond_rows = {}
-    struct_conn_rows = []
-    bonds = getattr(capped_ligand, "bonds", None)
-    if bonds is not None:
-        conn_id = 1
-        for bond in bonds._bonds:
-            i, j = int(bond[0]), int(bond[1])
-            if i not in ligand_keys or j not in ligand_keys:
-                continue
-            atom1 = ligand_keys[i]
-            atom2 = ligand_keys[j]
-            order = bond_order_from_biotite_row(bond)
-            same_residue = (
-                atom1["chain_id"] == atom2["chain_id"]
-                and atom1["res_id"] == atom2["res_id"]
-                and atom1["res_name"] == atom2["res_name"]
-            )
-            if same_residue:
-                key = tuple(sorted((atom1["atom_name"], atom2["atom_name"])))
-                chem_key = (atom1["res_name"], key[0], key[1])
-                old_order = chem_bond_rows.get(chem_key, 0)
-                if order > old_order:
-                    chem_bond_rows[chem_key] = order
-            else:
-                struct_conn_rows.append(
-                    [
-                        str(conn_id),
-                        "covale",
-                        bond_value_order(order).lower(),
-                        atom1["chain_id"],
-                        atom2["chain_id"],
-                        atom1["res_name"],
-                        atom2["res_name"],
-                        str(atom1["res_id"]),
-                        str(atom2["res_id"]),
-                        atom1["atom_name"],
-                        atom2["atom_name"],
-                        ".",
-                        ".",
-                    ]
-                )
-                conn_id += 1
-
-    chem_rows = []
-    ordinal = 1
-    for (comp_id, atom1, atom2), order in sorted(chem_bond_rows.items()):
-        chem_rows.append(
-            [
-                str(ordinal),
-                comp_id,
-                atom1,
-                atom2,
-                bond_value_order(order),
-                bond_aromatic_flag(order),
-                "?",
-            ]
-        )
-        ordinal += 1
-
-    with open(out_path, "w") as handle:
-        handle.write(f"data_{strip_structure_suffix(out_path)}\n")
-        write_cif_loop(
-            handle,
-            [
-                "_atom_site.group_PDB",
-                "_atom_site.type_symbol",
-                "_atom_site.label_atom_id",
-                "_atom_site.label_alt_id",
-                "_atom_site.label_comp_id",
-                "_atom_site.label_asym_id",
-                "_atom_site.label_entity_id",
-                "_atom_site.label_seq_id",
-                "_atom_site.pdbx_PDB_ins_code",
-                "_atom_site.auth_seq_id",
-                "_atom_site.auth_comp_id",
-                "_atom_site.auth_asym_id",
-                "_atom_site.auth_atom_id",
-                "_atom_site.Cartn_x",
-                "_atom_site.Cartn_y",
-                "_atom_site.Cartn_z",
-                "_atom_site.pdbx_PDB_model_num",
-                "_atom_site.id",
-            ],
-            atom_rows,
-        )
-        write_cif_loop(
-            handle,
-            [
-                "_chem_comp_bond.pdbx_ordinal",
-                "_chem_comp_bond.comp_id",
-                "_chem_comp_bond.atom_id_1",
-                "_chem_comp_bond.atom_id_2",
-                "_chem_comp_bond.value_order",
-                "_chem_comp_bond.pdbx_aromatic_flag",
-                "_chem_comp_bond.pdbx_stereo_config",
-            ],
-            chem_rows,
-        )
-        write_cif_loop(
-            handle,
-            [
-                "_struct_conn.id",
-                "_struct_conn.conn_type_id",
-                "_struct_conn.pdbx_value_order",
-                "_struct_conn.ptnr1_label_asym_id",
-                "_struct_conn.ptnr2_label_asym_id",
-                "_struct_conn.ptnr1_label_comp_id",
-                "_struct_conn.ptnr2_label_comp_id",
-                "_struct_conn.ptnr1_label_seq_id",
-                "_struct_conn.ptnr2_label_seq_id",
-                "_struct_conn.ptnr1_label_atom_id",
-                "_struct_conn.ptnr2_label_atom_id",
-                "_struct_conn.pdbx_ptnr1_PDB_ins_code",
-                "_struct_conn.pdbx_ptnr2_PDB_ins_code",
-            ],
-            struct_conn_rows,
-        )
-        handle.write("#\n")
-
-
-def save_complex(out_path, capped_ligand, receptor, out_type):
-    if out_type == "pdb":
-        save_complex_pdb(out_path, capped_ligand, receptor)
-    elif out_type == "cif":
-        save_complex_cif(out_path, capped_ligand, receptor)
-    else:
-        raise ValueError(f"Unsupported output type: {out_type}")
 
 
 def process_base_file(base_file, args, cap_indexes, cap_numbering, tmp_root):
@@ -1216,7 +975,7 @@ def process_base_file(base_file, args, cap_indexes, cap_numbering, tmp_root):
                 continue
 
             try:
-                terminal_def = build_terminal_definition(chain_l, atom_map, args.terminal_order)
+                terminal_def = build_terminal_definition(chain_l, atom_map)
             except Exception as exc:
                 ligand_failures.append(f"{mode}:terminal:{exc}")
                 continue
@@ -1269,10 +1028,10 @@ def process_base_file(base_file, args, cap_indexes, cap_numbering, tmp_root):
             cap_stem = strip_structure_suffix(cap_entry["file"])
             out_name = (
                 f"{base_stem}_lig{ligand_id}_{cap_stem}_{cap_entry['mode']}"
-                f"_rmsd{rmsd:.3f}.{args.out_type}"
+                f"_rmsd{rmsd:.3f}.pdb"
             )
             out_path = Path(args.output) / out_name
-            save_complex(out_path, capped_ligand, receptor, args.out_type)
+            save_complex_pdb(out_path, capped_ligand, receptor)
             rows.append(
                 {
                     "base_file": str(base_file),
@@ -1310,7 +1069,7 @@ def process_base_file(base_file, args, cap_indexes, cap_numbering, tmp_root):
 def collect_base_files(base_dir):
     files = []
     for path in sorted(Path(base_dir).iterdir()):
-        if path.is_file() and path.name.lower().endswith((".cif.gz", ".mmcif.gz", ".cif", ".mmcif")):
+        if path.is_file() and path.name.lower().endswith((".cif.gz", ".cif")):
             files.append(path)
     if not files:
         raise ValueError(f"No .cif/.cif.gz files found in {base_dir}")
@@ -1423,34 +1182,24 @@ def run_base_files(args, base_files, cap_indexes, cap_numbering, tmp_root):
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Align cap SDF/CIF conformers to ligands in CPSea multi-block CIF files, "
+            "Align relaxed SDF cap conformers to ligands in CPSea multi-block CIF files, "
             "extract each ligand's mapped receptor residues, reject clashes, and "
-            "save capped ligand-receptor complexes."
+            "save capped ligand-receptor PDB complexes."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "YAML atom lists describe the cap itself:\n"
             "  C_ter: cap C-terminal amide atoms, usually NME CA,N + cap last-residue C,O,CA\n"
             "  N_ter: cap N-terminal amide atoms, usually ACE CA,C,O + cap first-residue N,CA\n\n"
-            "Default --terminal-order cter-to-nter maps:\n"
+            "Default mapping:\n"
             "  cap C_ter -> base firstAA CA,N + base ACE C,O,CA\n"
-            "  cap N_ter -> base lastAA CA,C,O + base NME N,CA\n\n"
-            "Use --terminal-order cter-to-cter for the original CappingAlign.py order."
+            "  cap N_ter -> base lastAA CA,C,O + base NME N,CA"
         ),
     )
     parser.add_argument("--base", required=True, help="Directory of .cif/.cif.gz base files.")
-    parser.add_argument("--cap", required=True, help="Directory of cap .sdf, .cif, or .pdb files.")
+    parser.add_argument("--cap", required=True, help="Directory of relaxed cap .sdf/.sd files.")
     parser.add_argument("--index", required=True, help="YAML atom mapping for cap C_ter/N_ter atoms.")
-    parser.add_argument("-o", "--output", required=True, help="Output directory for capped complexes.")
-    parser.add_argument(
-        "--out_type",
-        choices=["pdb", "cif"],
-        default="pdb",
-        help=(
-            "Merged complex output type. Default: pdb. PDB writes explicit CONECT "
-            "records for ligand/CAP bonds and is usually better for Schrodinger relaxation."
-        ),
-    )
+    parser.add_argument("-o", "--output", required=True, help="Output directory for capped PDB complexes.")
     parser.add_argument("--cap-name", default=None, help="Top-level cap name in the YAML. Inferred if only one exists.")
     parser.add_argument("--rmsd-cutoff", type=float, default=0.5, help="Maximum anchor RMSD to accept. Default: 0.5")
     parser.add_argument("--approx-k", type=int, default=20, help="Top-K BallTree candidates per mode. Use 0 for radius query.")
@@ -1477,23 +1226,6 @@ def parse_args():
         default=1,
         help="Number of worker processes over base CIF files. Use 0 for all CPUs. Default: 1",
     )
-    parser.add_argument(
-        "--terminal-order",
-        choices=[
-            "cter-to-nter",
-            "cter-to-cter",
-            "cross",
-            "same",
-            "first-c-last-n",
-            "last-c-first-n",
-        ],
-        default="cter-to-nter",
-        help=(
-            "How cap-side terminal atom lists are mapped onto base ligand terminal amides. "
-            "Default cter-to-nter follows this task: cap C_ter -> base ACE-firstAA, "
-            "cap N_ter -> base lastAA-NME. cter-to-cter is the original convention."
-        ),
-    )
     parser.add_argument("--save-all", action="store_true", help="Save all clash-free hits in the retrieved candidate set.")
     parser.add_argument("--keep-tmp", action="store_true", help="Keep temporary ligand/receptor PDB files.")
     parser.add_argument("--summary", default=None, help="Summary CSV path. Default: <output>/capping_align_batch_summary.csv")
@@ -1515,9 +1247,9 @@ def main():
     print(f"Cap name: {cap_name}")
     print(f"Indexed cap entries: {len(cap_entries)}")
     print(f"Base files: {len(base_files)}")
-    print(f"Terminal order: {args.terminal_order}")
+    print("Terminal mapping: cap C_ter -> base ACE-firstAA; cap N_ter -> base lastAA-NME")
     print(f"Descriptor distance cutoff: {descriptor_distance_cutoff(args):.4f}")
-    print(f"Output type: {args.out_type}")
+    print("Output type: pdb")
     requested_processors = args.processors if args.processors > 0 else cpu_count()
     active_processors = max(1, min(requested_processors, len(base_files)))
     print(f"Processors: {active_processors}")

@@ -79,9 +79,9 @@ def save_atom_name_map(mol, output_dir, name):
     print(f"Atom name map is saved to: {csv_path}")
 
 
-def generate_and_optimize_conformers(mol, num_conformers):
+def generate_and_optimize_conformers(mol, num_conformers, seed=42):
     params = AllChem.ETKDGv3()
-    params.randomSeed = 42  
+    params.randomSeed = int(seed)
     params.useExpTorsionAnglePrefs = True  
     params.useBasicKnowledge = True 
     
@@ -130,7 +130,7 @@ def save_all_conformers(mol, output_path, output_dir, name):
             writer.writerow({'Conf_ID': conf_id, 'Energy (kJ/mol)': f"{energy:.2f}"})
     print(f"All conformation energies are saved to: {csv_path}")
 
-def main(name, smiles, num_conformers, output_dir):
+def main(name, smiles, num_conformers, output_dir, seed=42):
     print(f"CappingGen with RDKit version {rdkit.__version__}")
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -138,7 +138,7 @@ def main(name, smiles, num_conformers, output_dir):
         Capping = create_capping(smiles)
         print(f"Atom count: {Capping.GetNumAtoms()}")
 
-        optimized_mol = generate_and_optimize_conformers(Capping, num_conformers)
+        optimized_mol = generate_and_optimize_conformers(Capping, num_conformers, seed=seed)
         print(f"{optimized_mol.GetNumConformers()} conformers generated and optimized")
 
         set_pdb_info(optimized_mol)
@@ -153,7 +153,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", type=str, required=True, default="Capping1")
     parser.add_argument("--smiles", type=str, required=True, default="CC1=NC=C(COP([O-])([O-])=O)C(C([H])=O)=C1O")
-    parser.add_argument("--num", type=int, required=True, default="1000")
+    parser.add_argument("--num", type=int, required=True, default=1000)
     parser.add_argument("--out", type=str, default="./")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for ETKDG conformer generation.")
     args = parser.parse_args()
-    main(args.name, args.smiles, args.num, args.out)
+    main(args.name, args.smiles, args.num, args.out, seed=args.seed)

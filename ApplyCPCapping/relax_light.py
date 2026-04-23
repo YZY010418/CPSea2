@@ -34,14 +34,8 @@ run this script by $SCHRODINGER/run python3 this_script.py
 '''
 
 SUPPORTED_INPUT_SUFFIXES = (
-    ".maegz",
-    ".mae",
     ".pdb",
     ".pdb.gz",
-    ".cif",
-    ".cif.gz",
-    ".mmcif",
-    ".mmcif.gz",
     ".sdf",
     ".sd",
 )
@@ -50,14 +44,8 @@ SUPPORTED_INPUT_SUFFIXES = (
 def strip_structure_suffix(path: Path) -> str:
     name = path.name
     for suffix in (
-        ".maegz",
-        ".mae",
         ".pdb.gz",
-        ".cif.gz",
-        ".mmcif.gz",
         ".pdb",
-        ".cif",
-        ".mmcif",
         ".sdf",
         ".sd",
     ):
@@ -79,9 +67,18 @@ def collect_structure_files(input_dir: Path):
     return files
 
 
-def expected_output_path(input_structure: Path, output_dir: Path, out_type: str):
+def output_suffix_for_input(input_structure: Path):
+    name = input_structure.name.lower()
+    if name.endswith((".sdf", ".sd")):
+        return "sdf"
+    if name.endswith((".pdb", ".pdb.gz")):
+        return "pdb"
+    raise ValueError(f"Unsupported input structure type: {input_structure}")
+
+
+def expected_output_path(input_structure: Path, output_dir: Path):
     stem = strip_structure_suffix(input_structure)
-    return output_dir / f"{stem}_relaxed.{out_type}"
+    return output_dir / f"{stem}_relaxed.{output_suffix_for_input(input_structure)}"
 
 
 def atom_name_sidecar_candidates(input_structure: Path):
@@ -186,7 +183,6 @@ def minimize_ligand_with_frozen_environment(
 def relax_one_structure(
     input_structure: Path,
     output_dir: Path,
-    out_type: str,
     ligand_asl: str,
     hydrogen_scope: str,
     max_steps: int,
@@ -196,7 +192,7 @@ def relax_one_structure(
     verbose: bool,
 ):
     stem = strip_structure_suffix(input_structure)
-    output_structure = expected_output_path(input_structure, output_dir, out_type)
+    output_structure = expected_output_path(input_structure, output_dir)
 
     if output_structure.exists() and not overwrite:
         copy_atom_name_sidecar(input_structure, output_dir)
@@ -234,7 +230,6 @@ def relax_worker(task):
     (
         structure_file,
         output_dir,
-        out_type,
         ligand_asl,
         hydrogen_scope,
         max_steps,
@@ -250,7 +245,6 @@ def relax_worker(task):
             *relax_one_structure(
                 input_structure=structure_file,
                 output_dir=output_dir,
-                out_type=out_type,
                 ligand_asl=ligand_asl,
                 hydrogen_scope=hydrogen_scope,
                 max_steps=max_steps,
@@ -268,7 +262,6 @@ def worker_command(task):
     (
         structure_file,
         output_dir,
-        out_type,
         ligand_asl,
         hydrogen_scope,
         max_steps,
@@ -285,8 +278,6 @@ def worker_command(task):
         str(structure_file),
         "-o",
         str(output_dir),
-        "--out_type",
-        out_type,
         "--ligand-asl",
         ligand_asl,
         "--hydrogen-scope",
@@ -308,8 +299,7 @@ def worker_command(task):
 def result_from_completed_process(task, completed):
     structure_file = task[0]
     output_dir = task[1]
-    out_type = task[2]
-    output_structure = expected_output_path(structure_file, output_dir, out_type)
+    output_structure = expected_output_path(structure_file, output_dir)
 
     if completed.returncode == 0:
         lines = (completed.stdout or "").strip().splitlines()
@@ -344,8 +334,8 @@ def run_subprocess_relaxation_tasks(tasks, processors):
         while pending or running:
             while pending and len(running) < processors:
                 task = pending.pop(0)
-                output_structure = expected_output_path(task[0], task[1], task[2])
-                if output_structure.exists() and not task[8]:
+                output_structure = expected_output_path(task[0], task[1])
+                if output_structure.exists() and not task[7]:
                     copy_atom_name_sidecar(task[0], task[1])
                     results.append((task[0], "skip", output_structure, 0.0))
                     progress.update(1)
@@ -400,16 +390,18 @@ def run_relaxation_tasks(tasks, processors):
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Prepare and minimize a directory of PDB/CIF/SDF/MAE structures using the "
+            "Prepare and minimize a directory of SDF cap conformers or PDB merged "
+            "complexes using the "
             "Schrodinger Python API. Hydrogens are added, then only the ligand "
-            "substructure is minimized while the remaining atoms are position-frozen."
+            "substructure is minimized while the remaining atoms are position-frozen. "
+            "SDF inputs are written as SDF; PDB inputs are written as PDB."
         )
     )
     parser.add_argument(
         "-i", "--input",
         required=False,
         type=Path,
-        help="Directory containing input .pdb, .cif, .sdf, or .mae files.",
+        help="Directory containing input .sdf/.sd caps or .pdb/.pdb.gz merged complexes.",
     )
     parser.add_argument(
         "--single-input",
@@ -424,18 +416,12 @@ def parse_args():
         help="Directory for relaxed outputs.",
     )
     parser.add_argument(
-        "--out_type",
-        choices=["pdb", "sdf", "mae", "maegz"],
-        default="pdb",
-        help=(
-            "Relaxed output file type. Default: pdb. Schrodinger StructureWriter "
-            "does not support CIF output in 2024-1."
-        ),
-    )
-    parser.add_argument(
         "--ligand-asl",
         default='chain.name "L"',
-        help='ASL used to define the movable ligand atoms. Default: chain.name "L"',
+        help=(
+            'ASL used to define movable ligand atoms. Default: chain.name "L". '
+            "For SDF-only cap files, the whole molecule is used if this ASL matches nothing."
+        ),
     )
     parser.add_argument(
         "--hydrogen-scope",
@@ -500,7 +486,6 @@ def main():
         status, output_structure, elapsed = relax_one_structure(
             input_structure=input_structure,
             output_dir=output_dir,
-            out_type=args.out_type,
             ligand_asl=args.ligand_asl,
             hydrogen_scope=args.hydrogen_scope,
             max_steps=args.max_steps,
@@ -521,12 +506,12 @@ def main():
     structure_files = collect_structure_files(input_dir)
 
     if not structure_files:
-        print(f"No supported PDB/CIF/SDF/MAE files found in {input_dir}")
+        print(f"No supported SDF or PDB files found in {input_dir}")
         return
 
     print(f"Found {len(structure_files)} input structure files")
     print(f"Output directory: {output_dir}")
-    print(f"Output type: {args.out_type}")
+    print("Output type: inferred from input (.sdf/.sd -> .sdf, .pdb/.pdb.gz -> .pdb)")
     print(f"Ligand ASL: {args.ligand_asl}")
     print(f"Hydrogen scope: {args.hydrogen_scope}")
     print(f"Max steps: {args.max_steps}")
@@ -540,7 +525,6 @@ def main():
         (
             structure_file,
             output_dir,
-            args.out_type,
             args.ligand_asl,
             args.hydrogen_scope,
             args.max_steps,
