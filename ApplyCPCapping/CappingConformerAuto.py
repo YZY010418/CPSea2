@@ -7,11 +7,15 @@ import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdMolAlign
 from rdkit.ML.Cluster import Butina
+
+
+_RMSD_WORKER_MOLS = None
 
 
 def run_cmd(cmd, cwd=None):
@@ -71,13 +75,9 @@ def read_single_sdf(path):
     return None
 
 
-def pairwise_rmsd_cluster_count(mols, rmsd_cutoff):
-    n_mols = len(mols)
-    if n_mols == 0:
-        return 0
-    if n_mols == 1:
-        return 1
-
+def validate_same_topology(mols):
+    if not mols:
+        return
     template = tuple(atom.GetAtomicNum() for atom in mols[0].GetAtoms())
     for idx, mol in enumerate(mols[1:], start=1):
         atom_types = tuple(atom.GetAtomicNum() for atom in mol.GetAtoms())
@@ -87,11 +87,85 @@ def pairwise_rmsd_cluster_count(mols, rmsd_cutoff):
                 "atom ordering/types differ."
             )
 
+
+def init_rmsd_worker(mols):
+    global _RMSD_WORKER_MOLS
+    _RMSD_WORKER_MOLS = mols
+
+
+def rmsd_distance_chunk(index_pairs):
+    return [
+        float(rdMolAlign.GetBestRMS(_RMSD_WORKER_MOLS[i], _RMSD_WORKER_MOLS[j]))
+        for i, j in index_pairs
+    ]
+
+
+def iter_pair_index_chunks(n_mols, start_i, chunk_size):
+    chunk = []
+    for i in range(start_i, n_mols):
+        for j in range(i):
+            chunk.append((i, j))
+            if len(chunk) >= chunk_size:
+                yield chunk
+                chunk = []
+    if chunk:
+        yield chunk
+
+
+def serial_pairwise_rmsd_distances(mols, start_i=1):
     distances = []
-    for i in range(1, n_mols):
+    for i in range(start_i, len(mols)):
         for j in range(i):
             rmsd = rdMolAlign.GetBestRMS(mols[i], mols[j])
             distances.append(float(rmsd))
+    return distances
+
+
+def pairwise_rmsd_distances(mols, start_i=1, processes=1):
+    n_mols = len(mols)
+    start_i = max(1, int(start_i))
+    if n_mols <= 1 or start_i >= n_mols:
+        return []
+
+    worker_count = min(max(1, int(processes)), n_mols - 1)
+    if worker_count == 1:
+        return serial_pairwise_rmsd_distances(mols, start_i=start_i)
+
+    pair_count = (start_i + n_mols - 1) * (n_mols - start_i) // 2
+    chunk_size = max(100, min(5000, pair_count // (worker_count * 8) or 1))
+    chunks = iter_pair_index_chunks(n_mols, start_i, chunk_size)
+
+    distances = []
+    try:
+        with ProcessPoolExecutor(
+            max_workers=worker_count,
+            initializer=init_rmsd_worker,
+            initargs=(mols,),
+        ) as executor:
+            for chunk_distances in executor.map(rmsd_distance_chunk, chunks):
+                distances.extend(chunk_distances)
+    except Exception as exc:
+        print(
+            f"Warning: parallel RMSD clustering failed ({exc}); falling back to serial.",
+            file=sys.stderr,
+        )
+        distances = serial_pairwise_rmsd_distances(mols, start_i=start_i)
+    return distances
+
+
+def cluster_count_from_distances(distances, n_mols, rmsd_cutoff):
+    if n_mols == 0:
+        return 0
+    if n_mols == 1:
+        return 1
+
+    expected_distances = n_mols * (n_mols - 1) // 2
+    if len(distances) != expected_distances:
+        raise ValueError(
+            f"Expected {expected_distances} pairwise distances for {n_mols} molecules, "
+            f"got {len(distances)}."
+        )
+
     clusters = Butina.ClusterData(
         distances,
         nPts=n_mols,
@@ -100,6 +174,12 @@ def pairwise_rmsd_cluster_count(mols, rmsd_cutoff):
         reordering=True,
     )
     return len(clusters)
+
+
+def pairwise_rmsd_cluster_count(mols, rmsd_cutoff, processes=1):
+    validate_same_topology(mols)
+    distances = pairwise_rmsd_distances(mols, processes=processes)
+    return cluster_count_from_distances(distances, len(mols), rmsd_cutoff)
 
 
 def collect_relaxed_sdfs(relaxed_dir):
@@ -228,13 +308,24 @@ def parse_args():
     )
     parser.add_argument("--python", default=sys.executable, help="Python executable for CappingGen.py.")
     parser.add_argument("-p", "--processors", type=int, default=1, help="Processors for relax_light.py.")
+    parser.add_argument(
+        "--cluster-processors",
+        type=int,
+        default=None,
+        help="Processes for RMSD clustering. Default: same as --processors.",
+    )
     parser.add_argument("--ligand-asl", default='chain.name "A"', help="Ligand ASL for relax_light.py.")
     parser.add_argument("--hydrogen-scope", choices=["all", "ligand"], default="all")
     parser.add_argument("--max-steps", type=int, default=200)
     parser.add_argument("--grad-conv", type=float, default=0.05)
     parser.add_argument("--dielectric", type=float, default=80.0)
     parser.add_argument("--keep-batches", action="store_true", help="Keep generated/relaxed files for each batch.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.processors < 1:
+        parser.error("--processors must be >= 1")
+    if args.cluster_processors is not None and args.cluster_processors < 1:
+        parser.error("--cluster-processors must be >= 1")
+    return args
 
 
 def main():
@@ -243,6 +334,7 @@ def main():
     capping_gen_script = script_dir / "CappingGen.py"
     relax_light_script = script_dir / "relax_light.py"
     schrodinger_run = build_schrodinger_run_path(args.schrodinger_run)
+    cluster_processes = args.cluster_processors or args.processors
 
     output_root = Path(args.out).expanduser().resolve()
     accepted_dir = output_root / "accepted_negative_sdf"
@@ -255,6 +347,8 @@ def main():
     batch_rows = []
     low_gain_streak = 0
     previous_cluster_count = 0
+    cluster_distances = []
+    clustered_mol_count = 0
 
     for batch_idx in range(1, args.max_batches + 1):
         seed = args.seed_start + batch_idx - 1
@@ -314,9 +408,21 @@ def main():
         batch_accepted = filter_negative_relaxed_sdfs(relaxed_dir, accepted_dir, batch_idx)
         accepted_entries.extend(batch_accepted)
 
-        print("Step 4/4: clustering accepted conformers")
+        print(f"Step 4/4: clustering accepted conformers ({cluster_processes} process(es))")
         all_mols = [entry["mol"] for entry in accepted_entries]
-        cluster_count = pairwise_rmsd_cluster_count(all_mols, args.cluster_rmsd)
+        validate_same_topology(all_mols)
+        new_distances = pairwise_rmsd_distances(
+            all_mols,
+            start_i=clustered_mol_count,
+            processes=cluster_processes,
+        )
+        cluster_distances.extend(new_distances)
+        clustered_mol_count = len(all_mols)
+        cluster_count = cluster_count_from_distances(
+            cluster_distances,
+            clustered_mol_count,
+            args.cluster_rmsd,
+        )
         cluster_gain = cluster_count - previous_cluster_count
         previous_cluster_count = cluster_count
 
