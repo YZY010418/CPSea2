@@ -16,7 +16,7 @@ import shutil
 import shlex
 import tempfile
 from dataclasses import dataclass
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Manager, Pool, cpu_count
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +50,24 @@ WORKER_ARGS = None
 WORKER_CAP_INDEXES = None
 WORKER_CAP_NUMBERING = None
 WORKER_TMP_ROOT = None
+WORKER_MERGED_COUNTER = None
+WORKER_MERGED_COUNTER_LOCK = None
+WORKER_METADATA_PATH = None
+WORKER_METADATA_LOCK = None
+
+METADATA_FIELDNAMES = [
+    "cyclic_type_name",
+    "merged_number",
+    "output_file",
+    "base_file",
+    "base_name",
+    "ligand_id",
+    "cap_file",
+    "cap_name",
+    "mode",
+    "descriptor_distance",
+    "rmsd",
+]
 
 
 @dataclass
@@ -68,6 +86,54 @@ def strip_structure_suffix(path):
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return Path(name).stem
+
+
+def sanitize_filename_component(value):
+    value = str(value).strip()
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+    value = value.strip("._")
+    return value or "cyclic"
+
+
+def existing_merged_max_number(output_dir, cyclic_type_name):
+    prefix = sanitize_filename_component(cyclic_type_name)
+    pattern = re.compile(rf"^{re.escape(prefix)}_merged_(\d+)\.pdb$")
+    max_number = 0
+    for path in Path(output_dir).iterdir():
+        match = pattern.match(path.name)
+        if not match:
+            continue
+        max_number = max(max_number, int(match.group(1)))
+    return max_number
+
+
+def next_merged_output_path(output_dir, cyclic_type_name):
+    prefix = sanitize_filename_component(cyclic_type_name)
+    WORKER_MERGED_COUNTER_LOCK.acquire()
+    try:
+        WORKER_MERGED_COUNTER.value += 1
+        number = WORKER_MERGED_COUNTER.value
+    finally:
+        WORKER_MERGED_COUNTER_LOCK.release()
+    return number, Path(output_dir) / f"{prefix}_merged_{number}.pdb"
+
+
+def write_metadata_header(path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=METADATA_FIELDNAMES)
+        writer.writeheader()
+
+
+def append_metadata_row(row):
+    WORKER_METADATA_LOCK.acquire()
+    try:
+        with open(WORKER_METADATA_PATH, "a", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=METADATA_FIELDNAMES)
+            writer.writerow({field: row.get(field, "") for field in METADATA_FIELDNAMES})
+    finally:
+        WORKER_METADATA_LOCK.release()
 
 
 def read_text(path):
@@ -370,7 +436,10 @@ def read_sdf_structure(path):
     if Chem is None:
         raise ImportError("Reading SDF caps requires RDKit")
 
-    supplier = Chem.SDMolSupplier(str(path), removeHs=False, sanitize=True)
+    # Preserve the explicit SDF bond table. Full RDKit sanitization can
+    # re-aromatize kekulized heterocycles, which loses the input single/double
+    # pattern when we later write PDB CONECT records.
+    supplier = Chem.SDMolSupplier(str(path), removeHs=False, sanitize=False)
     mol = next((m for m in supplier if m is not None), None)
     if mol is None:
         raise ValueError(f"No readable molecule found in {path}")
@@ -755,6 +824,15 @@ def build_terminal_definition(chain_l, atom_map):
     )
 
 
+def cap_link_atom_template_name(ligand_atom_name):
+    ligand_atom_name = str(ligand_atom_name).strip().upper()
+    if ligand_atom_name == "N":
+        return "C"
+    if ligand_atom_name == "C":
+        return "N"
+    return None
+
+
 def place_cap_on_ligand(cap_file, chain_l, atom_map, terminal_def):
     cap_struct = read_sdf_structure(cap_file)
     cap_struct.res_name = ["CAP" for _ in cap_struct.res_name]
@@ -799,6 +877,9 @@ def place_cap_on_ligand(cap_file, chain_l, atom_map, terminal_def):
                 f"Cannot add bond {ligand_res_id}:{ligand_atom_name} - CAP:{cap_atom_name}"
             )
         bond_list.add_bond(int(ligand_idx[0]), int(cap_idx[0]), bond_type=1)
+        template_name = cap_link_atom_template_name(ligand_atom_name)
+        if template_name:
+            merged.atom_name[int(cap_idx[0])] = template_name
 
     return rmsd, merged
 
@@ -1024,36 +1105,40 @@ def process_base_file(base_file, args, cap_indexes, cap_numbering, tmp_root):
 
         ligand_hits.sort(key=lambda item: item[0])
 
-        for hit_index, (rmsd, descriptor_distance, cap_entry, capped_ligand) in enumerate(ligand_hits, start=1):
-            cap_stem = strip_structure_suffix(cap_entry["file"])
-            out_name = (
-                f"{base_stem}_lig{ligand_id}_{cap_stem}_{cap_entry['mode']}"
-                f"_rmsd{rmsd:.3f}.pdb"
-            )
-            out_path = Path(args.output) / out_name
+        hits_to_save = ligand_hits if args.save_all else ligand_hits[:1]
+        for rmsd, descriptor_distance, cap_entry, capped_ligand in hits_to_save:
+            merged_number, out_path = next_merged_output_path(args.output, args.cyclic_type_name)
             save_complex_pdb(out_path, capped_ligand, receptor)
-            rows.append(
-                {
-                    "base_file": str(base_file),
-                    "ligand_id": ligand_id,
-                    "cap_file": str(cap_entry["file"]),
-                    "mode": cap_entry["mode"],
-                    "descriptor_distance": f"{descriptor_distance:.6f}",
-                    "rmsd": f"{rmsd:.6f}",
-                    "output_file": str(out_path),
-                    "status": "saved",
-                    "notes": "",
-                }
-            )
+            row = {
+                "cyclic_type_name": args.cyclic_type_name,
+                "merged_number": str(merged_number),
+                "base_file": str(base_file),
+                "base_name": base_stem,
+                "ligand_id": ligand_id,
+                "cap_file": str(cap_entry["file"]),
+                "cap_name": strip_structure_suffix(cap_entry["file"]),
+                "mode": cap_entry["mode"],
+                "descriptor_distance": f"{descriptor_distance:.6f}",
+                "rmsd": f"{rmsd:.6f}",
+                "output_file": str(out_path),
+                "status": "saved",
+                "notes": "",
+            }
+            append_metadata_row(row)
+            rows.append(row)
             if not args.save_all:
                 break
 
         if not ligand_hits:
             rows.append(
                 {
+                    "cyclic_type_name": "",
+                    "merged_number": "",
                     "base_file": str(base_file),
+                    "base_name": base_stem,
                     "ligand_id": ligand_id,
                     "cap_file": "",
+                    "cap_name": "",
                     "mode": "",
                     "descriptor_distance": "",
                     "rmsd": "",
@@ -1082,23 +1167,44 @@ def descriptor_distance_cutoff(args):
     return args.rmsd_cutoff * args.distance_factor
 
 
-def init_worker(args, cap_indexes, cap_numbering, tmp_root):
+def init_worker(
+    args,
+    cap_indexes,
+    cap_numbering,
+    tmp_root,
+    merged_counter,
+    merged_counter_lock,
+    metadata_path,
+    metadata_lock,
+):
     global WORKER_ARGS
     global WORKER_CAP_INDEXES
     global WORKER_CAP_NUMBERING
     global WORKER_TMP_ROOT
+    global WORKER_MERGED_COUNTER
+    global WORKER_MERGED_COUNTER_LOCK
+    global WORKER_METADATA_PATH
+    global WORKER_METADATA_LOCK
 
     WORKER_ARGS = args
     WORKER_CAP_INDEXES = cap_indexes
     WORKER_CAP_NUMBERING = cap_numbering
     WORKER_TMP_ROOT = Path(tmp_root)
+    WORKER_MERGED_COUNTER = merged_counter
+    WORKER_MERGED_COUNTER_LOCK = merged_counter_lock
+    WORKER_METADATA_PATH = Path(metadata_path)
+    WORKER_METADATA_LOCK = metadata_lock
 
 
 def error_summary_row(base_file, exc):
     return {
+        "cyclic_type_name": "",
+        "merged_number": "",
         "base_file": str(base_file),
+        "base_name": strip_structure_suffix(base_file),
         "ligand_id": "",
         "cap_file": "",
+        "cap_name": "",
         "mode": "",
         "descriptor_distance": "",
         "rmsd": "",
@@ -1143,40 +1249,61 @@ def progress_write(message):
         print(message)
 
 
-def run_base_files(args, base_files, cap_indexes, cap_numbering, tmp_root):
+def run_base_files(args, base_files, cap_indexes, cap_numbering, tmp_root, metadata_path):
     processors = args.processors if args.processors > 0 else cpu_count()
     processors = max(1, min(processors, len(base_files)))
 
     all_rows = []
-    worker_args = (args, cap_indexes, cap_numbering, tmp_root)
+    initial_number = existing_merged_max_number(args.output, args.cyclic_type_name)
 
-    if processors == 1:
-        init_worker(*worker_args)
-        iterator = tqdm(base_files, total=len(base_files), desc="Base files", unit="file")
-        for base_file in iterator:
-            result = process_base_file_worker(base_file)
-            if result["error"]:
-                progress_write(f"{Path(base_file).name}: ERROR {result['error']}")
-            else:
-                progress_write(f"{Path(base_file).name}: saved {result['saved']} capped complexes")
-            all_rows.extend(result["rows"])
-        return all_rows
+    with Manager() as manager:
+        merged_counter = manager.Value("i", initial_number)
+        merged_counter_lock = manager.Lock()
+        metadata_lock = manager.Lock()
+        worker_args = (
+            args,
+            cap_indexes,
+            cap_numbering,
+            tmp_root,
+            merged_counter,
+            merged_counter_lock,
+            metadata_path,
+            metadata_lock,
+        )
 
-    with Pool(
-        processes=processors,
-        initializer=init_worker,
-        initargs=worker_args,
-    ) as pool:
-        iterator = pool.imap_unordered(process_base_file_worker, base_files, chunksize=1)
-        for result in tqdm(iterator, total=len(base_files), desc="Base files", unit="file"):
-            base_name = Path(result["base_file"]).name
-            if result["error"]:
-                progress_write(f"{base_name}: ERROR {result['error']}")
-            else:
-                progress_write(f"{base_name}: saved {result['saved']} capped complexes")
-            all_rows.extend(result["rows"])
+        if processors == 1:
+            init_worker(*worker_args)
+            iterator = tqdm(base_files, total=len(base_files), desc="Base files", unit="file")
+            for base_file in iterator:
+                result = process_base_file_worker(base_file)
+                if result["error"]:
+                    progress_write(f"{Path(base_file).name}: ERROR {result['error']}")
+                else:
+                    progress_write(f"{Path(base_file).name}: saved {result['saved']} capped complexes")
+                all_rows.extend(result["rows"])
+            return all_rows
+
+        with Pool(
+            processes=processors,
+            initializer=init_worker,
+            initargs=worker_args,
+        ) as pool:
+            iterator = pool.imap_unordered(process_base_file_worker, base_files, chunksize=1)
+            for result in tqdm(iterator, total=len(base_files), desc="Base files", unit="file"):
+                base_name = Path(result["base_file"]).name
+                if result["error"]:
+                    progress_write(f"{base_name}: ERROR {result['error']}")
+                else:
+                    progress_write(f"{base_name}: saved {result['saved']} capped complexes")
+                all_rows.extend(result["rows"])
 
     return all_rows
+
+
+def fill_summary_cyclic_type(rows, cyclic_type_name):
+    for row in rows:
+        if not row.get("cyclic_type_name"):
+            row["cyclic_type_name"] = cyclic_type_name
 
 
 def parse_args():
@@ -1201,6 +1328,11 @@ def parse_args():
     parser.add_argument("--index", required=True, help="YAML atom mapping for cap C_ter/N_ter atoms.")
     parser.add_argument("-o", "--output", required=True, help="Output directory for capped PDB complexes.")
     parser.add_argument("--cap-name", default=None, help="Top-level cap name in the YAML. Inferred if only one exists.")
+    parser.add_argument(
+        "--cyclic-type-name",
+        default=None,
+        help="Prefix for merged structure files. Default: resolved --cap-name.",
+    )
     parser.add_argument("--rmsd-cutoff", type=float, default=0.5, help="Maximum anchor RMSD to accept. Default: 0.5")
     parser.add_argument("--approx-k", type=int, default=20, help="Top-K BallTree candidates per mode. Use 0 for radius query.")
     parser.add_argument(
@@ -1229,6 +1361,7 @@ def parse_args():
     parser.add_argument("--save-all", action="store_true", help="Save all clash-free hits in the retrieved candidate set.")
     parser.add_argument("--keep-tmp", action="store_true", help="Keep temporary ligand/receptor PDB files.")
     parser.add_argument("--summary", default=None, help="Summary CSV path. Default: <output>/capping_align_batch_summary.csv")
+    parser.add_argument("--metadata", default=None, help="Saved-structure metadata CSV path. Default: <output>/capping_align_batch_metadata.csv")
     return parser.parse_args()
 
 
@@ -1238,13 +1371,18 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     cap_name, cap_numbering = load_cap_numbering(args.index, args.cap_name)
+    cyclic_type_name = args.cyclic_type_name or cap_name
+    args.cyclic_type_name = cyclic_type_name
     cap_entries, cap_indexes = build_cap_index(args.cap, cap_numbering)
     base_files = collect_base_files(args.base)
     summary_path = Path(args.summary) if args.summary else output_dir / "capping_align_batch_summary.csv"
+    metadata_path = Path(args.metadata) if args.metadata else output_dir / "capping_align_batch_metadata.csv"
+    write_metadata_header(metadata_path)
 
     tmp_root = Path(tempfile.mkdtemp(prefix="capping_align_batch_"))
 
     print(f"Cap name: {cap_name}")
+    print(f"Cyclic type name: {cyclic_type_name}")
     print(f"Indexed cap entries: {len(cap_entries)}")
     print(f"Base files: {len(base_files)}")
     print("Terminal mapping: cap C_ter -> base ACE-firstAA; cap N_ter -> base lastAA-NME")
@@ -1257,7 +1395,8 @@ def main():
 
     all_rows = []
     try:
-        all_rows = run_base_files(args, base_files, cap_indexes, cap_numbering, tmp_root)
+        all_rows = run_base_files(args, base_files, cap_indexes, cap_numbering, tmp_root, metadata_path)
+        fill_summary_cyclic_type(all_rows, cyclic_type_name)
     finally:
         if args.keep_tmp:
             print(f"Temporary files kept at: {tmp_root}")
@@ -1266,9 +1405,13 @@ def main():
 
     with open(summary_path, "w", newline="") as handle:
         fieldnames = [
+            "cyclic_type_name",
+            "merged_number",
             "base_file",
+            "base_name",
             "ligand_id",
             "cap_file",
+            "cap_name",
             "mode",
             "descriptor_distance",
             "rmsd",
@@ -1283,6 +1426,7 @@ def main():
     saved_total = sum(1 for row in all_rows if row["status"] == "saved")
     print(f"Saved total: {saved_total}")
     print(f"Summary: {summary_path}")
+    print(f"Metadata: {metadata_path}")
 
 
 if __name__ == "__main__":

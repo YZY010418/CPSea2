@@ -6,7 +6,7 @@
 
 *.prism
 
-*.DS_Store
+*DS_Store
 
 *.ai
 
@@ -19,3 +19,5 @@
 *.cif
 
 *.cif.gz
+
+*.sdf

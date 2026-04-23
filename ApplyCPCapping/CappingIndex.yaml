@@ -1,4 +1,11 @@
-ThioEther:
-  model_1:
+Thioether:
+  mode_1:
     C_ter: "C2, N1, C1, O1, C3" # NME CA,N -- LastAA C,O,CA
     N_ter: "C7, C6, O2, N2, C5" # ACE CA,C,O -- FirstAA N,CA
+TriAzole-A:
+  mode_1:
+    C_ter: "C14, N7, C13, O3, C3" 
+    N_ter: "C10, C9, O1, N3, C8" 
+  mode_2:
+    C_ter: "C12, N4, C11, O2, C8" 
+    N_ter: "C1, C2, O4, N1, C3"
