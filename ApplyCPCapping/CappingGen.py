@@ -20,6 +20,7 @@ def set_pdb_info(mol, chain_id="A", residue_name="UNL", residue_number=1):
         symbol = atom.GetSymbol()
         atom_counts[symbol] = atom_counts.get(symbol, 0) + 1
         atom_name = f"{symbol}{atom_counts[symbol]}"
+        atom.SetProp("atom_name", atom_name)
         atom.SetMonomerInfo(Chem.AtomPDBResidueInfo(
             atomName=atom_name,
             serialNumber=atom.GetIdx() + 1,
@@ -28,6 +29,55 @@ def set_pdb_info(mol, chain_id="A", residue_name="UNL", residue_number=1):
             chainId=chain_id,
             isHeteroAtom=True,
         ))
+
+
+def atom_metadata(atom):
+    monomer_info = atom.GetMonomerInfo()
+    if monomer_info is not None:
+        atom_name = monomer_info.GetName().strip()
+        chain_id = monomer_info.GetChainId().strip() or "A"
+        residue_name = monomer_info.GetResidueName().strip() or "UNL"
+        residue_number = monomer_info.GetResidueNumber()
+    else:
+        atom_name = atom.GetProp("atom_name") if atom.HasProp("atom_name") else atom.GetSymbol()
+        chain_id = "A"
+        residue_name = "UNL"
+        residue_number = 1
+
+    return {
+        "atom_index": atom.GetIdx(),
+        "atom_serial": atom.GetIdx() + 1,
+        "atom_name": atom_name,
+        "element": atom.GetSymbol(),
+        "chain_id": chain_id,
+        "residue_name": residue_name,
+        "residue_number": residue_number,
+    }
+
+
+def set_sdf_atom_name_property(mol):
+    atom_names = [atom_metadata(atom)["atom_name"] for atom in mol.GetAtoms()]
+    mol.SetProp("Atom_Names", ",".join(atom_names))
+
+
+def save_atom_name_map(mol, output_dir, name):
+    csv_path = os.path.join(output_dir, f"{name}_atom_names.csv")
+    fieldnames = [
+        "atom_index",
+        "atom_serial",
+        "atom_name",
+        "element",
+        "chain_id",
+        "residue_name",
+        "residue_number",
+    ]
+    with open(csv_path, mode="w", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for atom in mol.GetAtoms():
+            writer.writerow(atom_metadata(atom))
+    print(f"Atom name map is saved to: {csv_path}")
+
 
 def generate_and_optimize_conformers(mol, num_conformers):
     params = AllChem.ETKDGv3()
@@ -58,12 +108,17 @@ def save_all_conformers(mol, output_path, output_dir, name):
     
     # Save all conformers regardless of energy
     all_conf_ids = [conf_id for conf_id, _ in energies]
-    for conf_id in tqdm(all_conf_ids, desc="Saving PDB files"):
-        pdb_path = f"{output_path}_{conf_id}.pdb"
-        writer = Chem.PDBWriter(pdb_path)
+    energy_by_conf_id = {conf_id: energy for conf_id, energy in energies}
+    for conf_id in tqdm(all_conf_ids, desc="Saving SDF files"):
+        sdf_path = f"{output_path}_{conf_id}.sdf"
+        mol.SetProp("_Name", f"{name}_conformer_{conf_id}")
+        set_sdf_atom_name_property(mol)
+        mol.SetProp("Conf_ID", str(conf_id))
+        mol.SetProp("Energy_kJ_per_mol", f"{energy_by_conf_id[conf_id]:.2f}")
+        writer = Chem.SDWriter(sdf_path)
         writer.write(mol, confId=conf_id)
         writer.close()
-    print(f"All conformations are saved to: {output_path}_*.pdb")
+    print(f"All conformations are saved to: {output_path}_*.sdf")
 
     # Save energy data
     csv_path = os.path.join(output_dir, f"{name}_energies.csv")
@@ -87,6 +142,7 @@ def main(name, smiles, num_conformers, output_dir):
         print(f"{optimized_mol.GetNumConformers()} conformers generated and optimized")
 
         set_pdb_info(optimized_mol)
+        save_atom_name_map(optimized_mol, output_dir, name)
         output_all = os.path.join(output_dir, f"{name}_conformers")
         save_all_conformers(optimized_mol, output_all, output_dir, name)
 
