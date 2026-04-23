@@ -16,7 +16,8 @@ def parse_args():
             "Stream a CSV/TSV file, compute mean and standard deviation of one column. "
             "Optionally deduplicate CPSea2-style IDs by randomly keeping one row per "
             "'XXXX_clusterY' group. Optionally filter rows by peptide length range, "
-            "either from the input file itself or from an external length file matched by ID."
+            "either from the input file itself or from an external length file matched by ID. "
+            "If --negative is specified, only values < 0 are used for statistics."
         )
     )
     parser.add_argument(
@@ -115,20 +116,22 @@ def parse_args():
         default=None,
         help="1-based ID column index in the input file, used together with --length_file"
     )
+    parser.add_argument(
+        "--negative",
+        action="store_true",
+        help="If specified, only values < 0 are used for statistics, and their count is reported."
+    )
     return parser.parse_args()
 
 
 def count_lines(filepath: str, chunk_size: int = 1024 * 1024 * 8) -> int:
-    """
-    Fast line counting in binary mode.
-    """
     total = 0
     with open(filepath, "rb") as f:
         with tqdm(
             desc=f"Counting lines: {Path(filepath).name}",
             unit="B",
             unit_scale=True,
-            unit_divisor=1024
+            unit_divisor=1024,
         ) as pbar:
             while True:
                 chunk = f.read(chunk_size)
@@ -137,7 +140,6 @@ def count_lines(filepath: str, chunk_size: int = 1024 * 1024 * 8) -> int:
                 total += chunk.count(b"\n")
                 pbar.update(len(chunk))
 
-            # Handle files not ending with '\n'
             f.seek(0, 2)
             file_size = f.tell()
             if file_size > 0:
@@ -148,11 +150,6 @@ def count_lines(filepath: str, chunk_size: int = 1024 * 1024 * 8) -> int:
 
 
 def parse_cpsea2_group(raw_value: str):
-    """
-    Example:
-      2QPW_cluster0_ligand2 -> 2QPW_cluster0
-    Return None if malformed.
-    """
     if raw_value is None:
         return None
 
@@ -170,16 +167,6 @@ def parse_cpsea2_group(raw_value: str):
 
 
 def normalize_match_id(raw_value: str):
-    """
-    Normalize IDs before matching between --input and --length_file.
-    Rules requested by user:
-      - strip trailing '_relaxed_relaxed'
-      - strip trailing '_relaxed'
-      - strip trailing '.pdb'
-    Repeatedly strip until stable, so values like
-      xxx_relaxed_relaxed.pdb
-    are normalized to xxx.
-    """
     if raw_value is None:
         return None
 
@@ -201,12 +188,6 @@ def normalize_match_id(raw_value: str):
 
 
 def check_length_value(length_value, min_length, max_length):
-    """
-    Check a length value that has already been extracted.
-
-    Return:
-      (passes_filter: bool, reason: str|None)
-    """
     if length_value is None:
         return False, "empty"
 
@@ -225,18 +206,6 @@ def check_length_value(length_value, min_length, max_length):
 
 
 def check_length_filter(row, length_col_idx, min_length, max_length):
-    """
-    Return:
-      (passes_filter: bool, reason: str|None)
-
-    reason can be:
-      None                  -> passed
-      'no_length_filter'    -> no length filter requested, treated as passed
-      'empty'               -> row empty / value empty
-      'short'               -> row too short for length column
-      'non_numeric'         -> length value cannot be parsed
-      'out_of_range'        -> parsed but outside [min, max]
-    """
     if length_col_idx is None:
         return True, "no_length_filter"
 
@@ -261,10 +230,6 @@ def build_length_lookup(
     length_col_1based: int,
     total_lines: int,
 ):
-    """
-    Build normalized_id -> raw length value lookup from an external file.
-    If duplicated normalized IDs appear, keep the first one and count duplicates.
-    """
     delimiter = "," if file_type == "csv" else "\t"
     id_col_idx = id_col_1based - 1
     length_col_idx = length_col_1based - 1
@@ -338,21 +303,6 @@ def apply_external_length_filter(
     min_length,
     max_length,
 ):
-    """
-    Apply external length filtering to one row in the input file.
-
-    Return:
-      (passes_filter: bool, reason: str|None)
-
-    reason can be:
-      None
-      'empty_input_id'
-      'input_short'
-      'unmatched'
-      'matched_empty_length'
-      'matched_non_numeric_length'
-      'matched_out_of_range'
-    """
     if not row:
         return False, "empty_input_id"
 
@@ -397,27 +347,6 @@ def select_cpsea2_rows(
     input_id_1based=None,
     external_length_lookup=None,
 ):
-    """
-    First pass:
-    Use reservoir sampling to randomly keep one row per CPSea2 group.
-    If length filter is enabled, only rows passing the filter participate.
-
-    Returns:
-      {
-        "selected_row_indices": set of 1-based data-row indices,
-        "cpsea2_unique_groups": int,
-        "cpsea2_rows_selected": int,
-        "cpsea2_skipped_empty": int,
-        "cpsea2_skipped_short": int,
-        "cpsea2_skipped_invalid": int,
-        "length_filter_rows_passed": int,
-        "length_filter_skipped_empty": int,
-        "length_filter_skipped_short": int,
-        "length_filter_skipped_non_numeric": int,
-        "length_filter_skipped_out_of_range": int,
-        "length_filter_skipped_unmatched": int,
-      }
-    """
     delimiter = "," if file_type == "csv" else "\t"
     cpsea2_col_idx = cpsea2_id_1based - 1
     length_col_idx = length_column_1based - 1 if (length_column_1based is not None and external_length_lookup is None) else None
@@ -504,8 +433,6 @@ def select_cpsea2_rows(
                 seen = group_seen_count.get(group_key, 0) + 1
                 group_seen_count[group_key] = seen
 
-                # Reservoir sampling: among all rows in this group,
-                # keep one uniformly at random
                 if seen == 1 or rng.randrange(seen) == 0:
                     group_selected_row[group_key] = data_row_idx
 
@@ -540,12 +467,8 @@ def compute_stats(
     max_length=None,
     input_id_1based=None,
     external_length_lookup=None,
+    negative_only: bool = False,
 ):
-    """
-    Stream through the file and compute mean/std using Welford's algorithm.
-    If selected_row_indices is provided, only those data rows are used.
-    If selected_row_indices is None, optional length filtering is applied first.
-    """
     delimiter = "," if file_type == "csv" else "\t"
     col_idx = column_index_1based - 1
     length_col_idx = length_column_1based - 1 if (length_column_1based is not None and external_length_lookup is None) else None
@@ -565,8 +488,10 @@ def compute_stats(
     skipped_empty = 0
     skipped_short = 0
     skipped_non_numeric = 0
+    skipped_non_negative = 0
 
     rows_considered_for_stats = 0
+    negative_value_rows = 0
 
     length_filter_rows_passed = 0
     length_filter_skipped_empty = 0
@@ -645,6 +570,13 @@ def compute_stats(
                     skipped_non_numeric += 1
                     continue
 
+                if x < 0:
+                    negative_value_rows += 1
+
+                if negative_only and x >= 0:
+                    skipped_non_negative += 1
+                    continue
+
                 n += 1
                 delta = x - mean
                 mean += delta / n
@@ -655,11 +587,11 @@ def compute_stats(
         raise ValueError("No rows were selected for statistics.")
 
     if n == 0:
+        if negative_only:
+            raise ValueError("No valid numeric values < 0 were found in the specified column.")
         raise ValueError("No valid numeric values found in the specified column.")
 
-    # Sample std (ddof=1)
     std_sample = math.sqrt(m2 / (n - 1)) if n > 1 else float("nan")
-    # Population std (ddof=0)
     std_population = math.sqrt(m2 / n)
 
     stats = {
@@ -677,6 +609,9 @@ def compute_stats(
         "skipped_empty": skipped_empty,
         "skipped_short": skipped_short,
         "skipped_non_numeric": skipped_non_numeric,
+        "negative_only": negative_only,
+        "negative_value_rows": negative_value_rows,
+        "skipped_non_negative": skipped_non_negative,
         "cpsea2_id_1based": None,
         "cpsea2_unique_groups": None,
         "cpsea2_rows_selected": None,
@@ -747,7 +682,6 @@ def compute_stats(
     return stats
 
 
-
 def format_result(stats: dict) -> str:
     lines = [
         f"input_file               : {stats['input_file']}",
@@ -765,6 +699,13 @@ def format_result(stats: dict) -> str:
         f"skipped_short            : {stats['skipped_short']}",
         f"skipped_non_numeric      : {stats['skipped_non_numeric']}",
     ]
+
+    if stats["negative_only"]:
+        lines.extend([
+            f"negative_only            : {stats['negative_only']}",
+            f"negative_value_rows      : {stats['negative_value_rows']}",
+            f"skipped_non_negative     : {stats['skipped_non_negative']}",
+        ])
 
     if stats["length_column_1based"] is not None:
         lines.extend([
@@ -924,6 +865,7 @@ def main():
             max_length=args.max_length,
             input_id_1based=args.ID,
             external_length_lookup=external_length_info,
+            negative_only=args.negative,
         )
         result_text = format_result(stats)
 

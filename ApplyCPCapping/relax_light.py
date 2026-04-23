@@ -12,6 +12,10 @@ except ImportError:
 from schrodinger import structure
 from schrodinger.structutils import analyze, build, minimize
 
+'''
+run this script by $SCHRODINGER/run python3 this_script.py
+'''
+
 
 def strip_structure_suffix(path: Path) -> str:
     name = path.name

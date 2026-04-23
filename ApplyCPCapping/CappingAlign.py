@@ -199,7 +199,13 @@ def best_capping(input_file,cap_folder,cap_name,cap_numbering,balltree_file,outp
             return None
 
 def clash_check(chainL,chainR,thres=0.8):
-    vdw_radius_dict = {'C':1.7,'N':1.55,'O':1.52,'S':1.8}
+    vdw_radius_dict = {
+        'H': 1.2, 'C': 1.7, 'N': 1.55, 'O': 1.52, 'P': 1.8, 'S': 1.8,
+        'F': 1.47, 'CL': 1.75, 'BR': 1.85, 'I': 1.98,
+    }
+    def vdw_radius(atom):
+        return vdw_radius_dict.get(str(atom.element).upper(), 1.8)
+
     lig_bonds = chainL.bonds._bonds[:,:2].tolist()
     lig_graph = nx.Graph()
     lig_graph.add_edges_from(lig_bonds)
@@ -213,13 +219,17 @@ def clash_check(chainL,chainR,thres=0.8):
         dists = contact_dist[i].tolist()
         for j,d in zip(indices,dists):
             if j < len(chain_L_coord):
-                if j == i or nx.shortest_path_length(lig_graph, i, j) <= 3:
+                if j == i:
                     continue
-                if d <= thres*(vdw_radius_dict[chainL[j].element] + vdw_radius_dict[chainL[i].element]):
+                try:
+                    if nx.shortest_path_length(lig_graph, i, j) <= 3:
+                        continue
+                except nx.NetworkXNoPath:
+                    pass
+                if d <= thres*(vdw_radius(chainL[j]) + vdw_radius(chainL[i])):
                     clash_idx.append((i,j))
             else:
-                if d <= thres*(vdw_radius_dict[chainR[j-len(chain_L_coord)].element] + vdw_radius_dict[chainL[i].element]):
+                if d <= thres*(vdw_radius(chainR[j-len(chain_L_coord)]) + vdw_radius(chainL[i])):
                     clash_idx.append((i,j-len(chain_L_coord)))
     return clash_idx
-
 

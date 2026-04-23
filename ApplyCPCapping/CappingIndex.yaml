@@ -1,0 +1,4 @@
+ThioEther:
+  model_1:
+    C_ter: "C2, N1, C1, O1, C3" # NME CA,N -- LastAA C,O,CA
+    N_ter: "C7, C6, O2, N2, C5" # ACE CA,C,O -- FirstAA N,CA
