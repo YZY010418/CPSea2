@@ -58,11 +58,8 @@ WORKER_METADATA_LOCK = None
 METADATA_FIELDNAMES = [
     "cyclic_type_name",
     "merged_number",
-    "output_file",
-    "base_file",
     "base_name",
     "ligand_id",
-    "cap_file",
     "cap_name",
     "mode",
     "descriptor_distance",
@@ -910,28 +907,21 @@ def find_receptor_and_ligand_blocks(blocks):
     return receptor_name, ligand_blocks
 
 
-def prefilter_candidates(mode_index, query_descriptor, approx_k, distance_cutoff):
+def prefilter_candidates(mode_index, query_descriptor, distance_cutoff):
     entries = mode_index["entries"]
     tree = mode_index["tree"]
     query = np.expand_dims(query_descriptor, axis=0)
 
-    if approx_k > 0:
-        k = min(approx_k, len(entries))
-        distances, indices = tree.query(query, k=k, return_distance=True)
-        pairs = zip(distances[0], indices[0])
-    else:
-        indices, distances = tree.query_radius(
-            query,
-            r=distance_cutoff,
-            return_distance=True,
-        )
-        pairs = sorted(zip(distances[0], indices[0]), key=lambda item: item[0])
+    indices, distances = tree.query_radius(
+        query,
+        r=distance_cutoff,
+        return_distance=True,
+    )
+    pairs = sorted(zip(distances[0], indices[0]), key=lambda item: item[0])
 
     candidates = []
     for distance, index in pairs:
         distance = float(distance)
-        if distance_cutoff is not None and distance > distance_cutoff:
-            continue
         candidates.append((distance, entries[int(index)]))
 
     return candidates
@@ -1007,7 +997,7 @@ def process_base_file(base_file, args, cap_indexes, cap_numbering, tmp_root):
         raise ValueError("Receptor block has no _atom_site loop")
 
     base_stem = strip_structure_suffix(base_file)
-    distance_cutoff = descriptor_distance_cutoff(args)
+    distance_cutoff = args.distance_cutoff
     rows = []
 
     for ligand_id, ligand_block_name in sorted(ligand_blocks.items(), key=lambda item: int(item[0])):
@@ -1022,29 +1012,37 @@ def process_base_file(base_file, args, cap_indexes, cap_numbering, tmp_root):
         ligand_tmp = tmp_root / f"{base_stem}_lig{ligand_id}_L.pdb"
         receptor_tmp = tmp_root / f"{base_stem}_lig{ligand_id}_R.pdb"
 
-        n_ligand_atoms = write_atom_site_pdb(
-            ligand_atoms,
-            ligand_tmp,
-            chain_id="L",
-            include_conect=True,
-            chem_bond_rows=parse_loop(ligand_block, "_chem_comp_bond."),
-            struct_conn_rows=parse_loop(ligand_block, "_struct_conn."),
-        )
-        n_receptor_atoms = write_atom_site_pdb(
-            receptor_atoms,
-            receptor_tmp,
-            chain_id="R",
-            allowed_receptor_keys=receptor_map[ligand_id],
-            include_conect=False,
-        )
+        try:
+            n_ligand_atoms = write_atom_site_pdb(
+                ligand_atoms,
+                ligand_tmp,
+                chain_id="L",
+                include_conect=True,
+                chem_bond_rows=parse_loop(ligand_block, "_chem_comp_bond."),
+                struct_conn_rows=parse_loop(ligand_block, "_struct_conn."),
+            )
+            n_receptor_atoms = write_atom_site_pdb(
+                receptor_atoms,
+                receptor_tmp,
+                chain_id="R",
+                allowed_receptor_keys=receptor_map[ligand_id],
+                include_conect=False,
+            )
 
-        if n_ligand_atoms == 0 or n_receptor_atoms == 0:
-            continue
+            if n_ligand_atoms == 0 or n_receptor_atoms == 0:
+                continue
 
-        chain_l = read_structure(str(ligand_tmp))
-        chain_l.chain_id = np.full(chain_l.array_length(), "L")
-        receptor = read_structure(str(receptor_tmp))
-        receptor.chain_id = np.full(receptor.array_length(), "R")
+            chain_l = read_structure(str(ligand_tmp))
+            chain_l.chain_id = np.full(chain_l.array_length(), "L")
+            receptor = read_structure(str(receptor_tmp))
+            receptor.chain_id = np.full(receptor.array_length(), "R")
+        finally:
+            if not args.keep_tmp:
+                for tmp_path in (ligand_tmp, receptor_tmp):
+                    try:
+                        tmp_path.unlink()
+                    except FileNotFoundError:
+                        pass
 
         ligand_hits = []
         ligand_failures = []
@@ -1065,7 +1063,6 @@ def process_base_file(base_file, args, cap_indexes, cap_numbering, tmp_root):
             candidates = prefilter_candidates(
                 mode_index,
                 query,
-                approx_k=args.approx_k,
                 distance_cutoff=distance_cutoff,
             )
             if not candidates:
@@ -1161,10 +1158,13 @@ def collect_base_files(base_dir):
     return files
 
 
-def descriptor_distance_cutoff(args):
-    if args.distance_cutoff is not None:
-        return args.distance_cutoff
-    return args.rmsd_cutoff * args.distance_factor
+def make_tmp_root(args, cyclic_type_name):
+    if args.tmp_dir:
+        tmp_parent = Path(args.tmp_dir)
+    else:
+        tmp_parent = Path.cwd() / f"tmp_for_{sanitize_filename_component(cyclic_type_name)}"
+    tmp_parent.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix="capping_align_batch_", dir=tmp_parent))
 
 
 def init_worker(
@@ -1241,14 +1241,6 @@ def process_base_file_worker(base_file):
         }
 
 
-def progress_write(message):
-    write = getattr(tqdm, "write", None)
-    if callable(write):
-        write(message)
-    else:
-        print(message)
-
-
 def run_base_files(args, base_files, cap_indexes, cap_numbering, tmp_root, metadata_path):
     processors = args.processors if args.processors > 0 else cpu_count()
     processors = max(1, min(processors, len(base_files)))
@@ -1276,10 +1268,6 @@ def run_base_files(args, base_files, cap_indexes, cap_numbering, tmp_root, metad
             iterator = tqdm(base_files, total=len(base_files), desc="Base files", unit="file")
             for base_file in iterator:
                 result = process_base_file_worker(base_file)
-                if result["error"]:
-                    progress_write(f"{Path(base_file).name}: ERROR {result['error']}")
-                else:
-                    progress_write(f"{Path(base_file).name}: saved {result['saved']} capped complexes")
                 all_rows.extend(result["rows"])
             return all_rows
 
@@ -1290,11 +1278,6 @@ def run_base_files(args, base_files, cap_indexes, cap_numbering, tmp_root, metad
         ) as pool:
             iterator = pool.imap_unordered(process_base_file_worker, base_files, chunksize=1)
             for result in tqdm(iterator, total=len(base_files), desc="Base files", unit="file"):
-                base_name = Path(result["base_file"]).name
-                if result["error"]:
-                    progress_write(f"{base_name}: ERROR {result['error']}")
-                else:
-                    progress_write(f"{base_name}: saved {result['saved']} capped complexes")
                 all_rows.extend(result["rows"])
 
     return all_rows
@@ -1334,21 +1317,13 @@ def parse_args():
         help="Prefix for merged structure files. Default: resolved --cap-name.",
     )
     parser.add_argument("--rmsd-cutoff", type=float, default=0.5, help="Maximum anchor RMSD to accept. Default: 0.5")
-    parser.add_argument("--approx-k", type=int, default=20, help="Top-K BallTree candidates per mode. Use 0 for radius query.")
     parser.add_argument(
         "--distance-cutoff",
         type=float,
-        default=None,
+        default=3.0,
         help=(
-            "Maximum Euclidean distance in the 9D terminal descriptor before RMSD. "
-            "Default: --rmsd-cutoff * --distance-factor."
+            "Required hard threshold for Euclidean distance in the 9D terminal descriptor before RMSD."
         ),
-    )
-    parser.add_argument(
-        "--distance-factor",
-        type=float,
-        default=6.0,
-        help="Multiplier used to derive descriptor distance cutoff from RMSD cutoff. Default: 6.0",
     )
     parser.add_argument("--clash-threshold", type=float, default=0.8, help="VDW scaling threshold for clash_check(). Default: 0.8")
     parser.add_argument(
@@ -1360,6 +1335,11 @@ def parse_args():
     )
     parser.add_argument("--save-all", action="store_true", help="Save all clash-free hits in the retrieved candidate set.")
     parser.add_argument("--keep-tmp", action="store_true", help="Keep temporary ligand/receptor PDB files.")
+    parser.add_argument(
+        "--tmp-dir",
+        default=None,
+        help="Parent directory for temporary ligand/receptor PDB files. Default: ./tmp_for_<cyclic-type-name>",
+    )
     parser.add_argument("--summary", default=None, help="Summary CSV path. Default: <output>/capping_align_batch_summary.csv")
     parser.add_argument("--metadata", default=None, help="Saved-structure metadata CSV path. Default: <output>/capping_align_batch_metadata.csv")
     return parser.parse_args()
@@ -1379,19 +1359,21 @@ def main():
     metadata_path = Path(args.metadata) if args.metadata else output_dir / "capping_align_batch_metadata.csv"
     write_metadata_header(metadata_path)
 
-    tmp_root = Path(tempfile.mkdtemp(prefix="capping_align_batch_"))
+    tmp_root = make_tmp_root(args, cyclic_type_name)
 
     print(f"Cap name: {cap_name}")
     print(f"Cyclic type name: {cyclic_type_name}")
     print(f"Indexed cap entries: {len(cap_entries)}")
     print(f"Base files: {len(base_files)}")
     print("Terminal mapping: cap C_ter -> base ACE-firstAA; cap N_ter -> base lastAA-NME")
-    print(f"Descriptor distance cutoff: {descriptor_distance_cutoff(args):.4f}")
+    print(f"Descriptor distance cutoff: {args.distance_cutoff:.4f}")
+    print("Prefilter: BallTree radius query; no nearest-K truncation")
     print("Output type: pdb")
     requested_processors = args.processors if args.processors > 0 else cpu_count()
     active_processors = max(1, min(requested_processors, len(base_files)))
     print(f"Processors: {active_processors}")
     print(f"Output: {output_dir}")
+    print(f"Temporary root: {tmp_root}")
 
     all_rows = []
     try:
