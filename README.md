@@ -1,4 +1,4 @@
-## CPSea2: Combine linear and cyclic peptide data with more plausible structure
+## CPSea2: Combine linear and cyclic peptide data for Arbitrary Cycliczation
 
 😊 Hi there, this is the repo for **CPSea2**, an *"upgraded"* synthetic dataset for cyclic peptide binder design from the previous [**CPSea**](https://github.com/YZY010418/CPSea), aiming to be compatible with diverse cyclization structures with better cost-effectiveness and structural rationality.
 
@@ -10,7 +10,7 @@
 💪 **Major Upgrades**:
 
 * The idea of generating cyclic peptides by merging a linear peptide and a capping structure, enabling arbitraray cyclization structures with more reasonable geometry.
-* Re-designed filters enabling more plausible synthetic complex data that align better to experimental datasets.
+* Re-designed filters enabling more desirable synthetic complex data that align better to experimental datasets.
 
 🗺️ This repo provides protocols for the curation of CPSea2, the merging between CPSea2 and CPcapping, and some metrics for evaluations on the dataset. You may download constructed CPSea2 in [**Zenodo**](https://github.com/YZY010418/CPSea2), and you may find the generative model trained on CPSea2 in [**PepAny**](https://github.com/YZY010418/CPSea2). 
 
@@ -71,8 +71,20 @@ python $Schrodinger/run python3 relax_light.py -i input_dir -o output_dir -p num
 Now we have finished the merging process and have cyclic peptide binders in hands.
 
 ## 📈 Evaluations
-We evaluate structures in the following aspects:
-### SufficientContact
+
+We evaluate complex structures using tools including BSA, PLIP, GRAVY, Vina and FoldX. We also evaluate the redundancy by clustering complexes based on receptor sequences using MMSeqs2. These analysis scripts can be used as following:
+
+```bash
+python CalcSASA.py -i input_pdb_dir -o output_csv -n num_processors
+python plip_analysis.py -i input_pdb_dir -o output_csv -n num_processors
+python CalcGRAVY.py -i input_pdb_dir -o output_csv -n num_processors
+python Vina_analysis.py -i input_pdb_dir -o output_csv -n num_processors (--score_only)
+python FoldX_analysis.py -i input_pdb_dir -o output_csv -n num_processors
+python extract_receptor_sequences.py -i input_pdb_dir -o output_fasta -n num_processors
+mmseqs easy-cluster fasta_file clusterRes tmp --min-seq-id 0.5 -c 0.8 --cov-mode 1
+```
+
+These results are further processed and intepreted as described in our paper.
 
 ## 📞 Contact
 If you have any questions, comments, or data requirements, please contact yangzy23@mails.tsinghua.edu.cn. We look forward to hear from the community!
