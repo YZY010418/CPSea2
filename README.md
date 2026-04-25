@@ -15,7 +15,7 @@
 🗺️ This repo provides protocols for the curation of CPSea2, the merging between CPSea2 and CPcapping, and some metrics for evaluations on the dataset. You may download constructed CPSea2 in [**Zenodo**](https://github.com/YZY010418/CPSea2), and you may find the generative model trained on CPSea2 in [**PepAny**](https://github.com/YZY010418/CPSea2). 
 
 
-## 🔍 FindCPBase
+## 🔍 Find CPbase
 
 As described in our paper, we pre-processed PDB and AFDB to remove redundancy and discard regions with low prediction confidence and rigidity, resulting in PDB70 and AFDB50_domains. We believe similar datasets could be generated following the described protocol, and please contact us for our source datasets used in our paper.
 
@@ -31,7 +31,7 @@ where source_data_names.list should be a list file with a stem name of a source 
 
 AFDB_multimer has been released recently, and has not been involved in current version of CPSea2 yet because we have not found a separate package for download. Nonetheless, we believe these data can be employed by a similar script as that used for PDB, with an additional filter on pLDDT. We will try including these data in future work.
 
-## 🔗 ApplyCPCapping
+## 🔗 Apply CPcapping
 
 We first generate plausible conformations for capping structures, then align and merge them with CPbase peptides. Alternatively, one may generate linear peptide binders as CPbase, so that more diverse terminal relative positions can be involved. Related discussions and instructions can be found in the **PepAny** repo.
 
