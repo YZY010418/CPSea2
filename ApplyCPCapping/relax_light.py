@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import inspect
 import shutil
 import subprocess
 import sys
@@ -7,24 +8,42 @@ import time
 from os import cpu_count
 from pathlib import Path
 
+class _TqdmFallback:
+    def __init__(self, iterable=None, **kwargs):
+        self.iterable = iterable
+
+    def __iter__(self):
+        if self.iterable is None:
+            return iter(())
+        return iter(self.iterable)
+
+    def update(self, n=1):
+        pass
+
+    def close(self):
+        pass
+
+
+def _multiprocessing_lock_available():
+    try:
+        from multiprocessing import RLock
+        RLock()
+        return True
+    except Exception:
+        return False
+
+
 try:
-    from tqdm import tqdm
+    from tqdm import tqdm as _real_tqdm
 except ImportError:
-    class _TqdmFallback:
-        def __init__(self, iterable=None, **kwargs):
-            self.iterable = iterable
+    _real_tqdm = None
 
-        def __iter__(self):
-            return iter(self.iterable or [])
-
-        def update(self, n=1):
-            pass
-
-        def close(self):
-            pass
-
+if _real_tqdm is None or not _multiprocessing_lock_available():
     def tqdm(iterable=None, **kwargs):
         return _TqdmFallback(iterable, **kwargs)
+else:
+    def tqdm(iterable=None, **kwargs):
+        return _real_tqdm(iterable, **kwargs)
 
 from schrodinger import structure
 from schrodinger.structutils import analyze, build, minimize
@@ -39,6 +58,90 @@ SUPPORTED_INPUT_SUFFIXES = (
     ".sdf",
     ".sd",
 )
+
+FORCE_FIELD_VALUE_ALIASES = {
+    "OPLS4": ("OPLS4", "S-OPLS"),
+    "S-OPLS": ("S-OPLS", "OPLS4"),
+}
+FORCE_FIELD_KEYWORD_CANDIDATES = (
+    "force_field",
+    "forcefield",
+    "forcefield_version",
+    "ffld_version",
+    "opls_version",
+)
+PROGRESS_PRINT_INTERVAL = 1000
+
+
+def print_completed_progress(done, total, force=False):
+    if done <= 0:
+        return
+    if not force and done % PROGRESS_PRINT_INTERVAL != 0:
+        return
+    print(f"Done {done}/{total} files", file=sys.stderr, flush=True)
+
+
+def force_field_values(force_field: str):
+    value = str(force_field).strip()
+    return FORCE_FIELD_VALUE_ALIASES.get(value.upper(), (value,))
+
+
+def minimizer_signature_info():
+    try:
+        return inspect.signature(minimize.Minimizer)
+    except (TypeError, ValueError):
+        try:
+            return inspect.signature(minimize.Minimizer.__init__)
+        except (TypeError, ValueError):
+            return None
+
+
+def force_field_keyword_candidates(force_field: str):
+    signature = minimizer_signature_info()
+    if signature is None:
+        return FORCE_FIELD_KEYWORD_CANDIDATES
+
+    parameters = signature.parameters
+    accepts_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    if accepts_kwargs:
+        return FORCE_FIELD_KEYWORD_CANDIDATES
+
+    candidates = [
+        keyword for keyword in FORCE_FIELD_KEYWORD_CANDIDATES
+        if keyword in parameters
+    ]
+    if candidates:
+        return candidates
+
+    accepted = ", ".join(parameters)
+    raise RuntimeError(
+        f"Cannot explicitly set force field {force_field!r}: "
+        f"schrodinger.structutils.minimize.Minimizer does not expose a known "
+        f"force-field keyword. Accepted parameters: {accepted}"
+    )
+
+
+def make_minimizer(base_kwargs, force_field: str):
+    if not force_field:
+        return minimize.Minimizer(**base_kwargs)
+
+    errors = []
+    for value in force_field_values(force_field):
+        for keyword in force_field_keyword_candidates(value):
+            try:
+                kwargs = dict(base_kwargs)
+                kwargs[keyword] = value
+                return minimize.Minimizer(**kwargs)
+            except Exception as exc:
+                errors.append(f"{keyword}={value}: {exc}")
+
+    raise RuntimeError(
+        f"Could not create a Minimizer with explicit force field {force_field!r}. "
+        f"Tried: {'; '.join(errors)}"
+    )
 
 
 def strip_structure_suffix(path: Path) -> str:
@@ -148,6 +251,7 @@ def minimize_ligand_with_frozen_environment(
     max_steps: int,
     grad_conv: float,
     dielectric_constant: float,
+    force_field: str,
     verbose: bool = False,
     allow_all_ligand_fallback: bool = False,
 ):
@@ -161,14 +265,15 @@ def minimize_ligand_with_frozen_environment(
     if not ligand_atoms:
         raise ValueError(f'No atoms matched ligand ASL after hydrogen addition: {ligand_asl}')
 
-    mz = minimize.Minimizer(
-        struct=st,
-        cleanup=False,
-        max_steps=max_steps,
-        gradient_criterion=grad_conv,
-        dielectric_constant=dielectric_constant,
-        verbose=verbose,
-    )
+    minimizer_kwargs = {
+        "struct": st,
+        "cleanup": False,
+        "max_steps": max_steps,
+        "gradient_criterion": grad_conv,
+        "dielectric_constant": dielectric_constant,
+        "verbose": verbose,
+    }
+    mz = make_minimizer(minimizer_kwargs, force_field)
 
     for atom in st.atom:
         if atom.index not in ligand_atoms:
@@ -188,6 +293,7 @@ def relax_one_structure(
     max_steps: int,
     grad_conv: float,
     dielectric_constant: float,
+    force_field: str,
     overwrite: bool,
     verbose: bool,
 ):
@@ -215,6 +321,7 @@ def relax_one_structure(
         max_steps=max_steps,
         grad_conv=grad_conv,
         dielectric_constant=dielectric_constant,
+        force_field=force_field,
         verbose=verbose,
         allow_all_ligand_fallback=allow_all_ligand_fallback,
     )
@@ -235,6 +342,7 @@ def relax_worker(task):
         max_steps,
         grad_conv,
         dielectric_constant,
+        force_field,
         overwrite,
         verbose,
     ) = task
@@ -250,6 +358,7 @@ def relax_worker(task):
                 max_steps=max_steps,
                 grad_conv=grad_conv,
                 dielectric_constant=dielectric_constant,
+                force_field=force_field,
                 overwrite=overwrite,
                 verbose=verbose,
             ),
@@ -267,6 +376,7 @@ def worker_command(task):
         max_steps,
         grad_conv,
         dielectric_constant,
+        force_field,
         overwrite,
         verbose,
     ) = task
@@ -288,6 +398,8 @@ def worker_command(task):
         str(grad_conv),
         "--dielectric",
         str(dielectric_constant),
+        "--force-field",
+        force_field,
     ]
     if overwrite:
         cmd.append("--overwrite")
@@ -335,10 +447,11 @@ def run_subprocess_relaxation_tasks(tasks, processors):
             while pending and len(running) < processors:
                 task = pending.pop(0)
                 output_structure = expected_output_path(task[0], task[1])
-                if output_structure.exists() and not task[7]:
+                if output_structure.exists() and not task[8]:
                     copy_atom_name_sidecar(task[0], task[1])
                     results.append((task[0], "skip", output_structure, 0.0))
                     progress.update(1)
+                    print_completed_progress(len(results), len(tasks))
                     continue
 
                 process = subprocess.Popen(
@@ -366,11 +479,14 @@ def run_subprocess_relaxation_tasks(tasks, processors):
                 results.append(result_from_completed_process(task, completed_process))
                 del running[process]
                 progress.update(1)
+                print_completed_progress(len(results), len(tasks))
     finally:
         progress.close()
         for process in running:
             process.terminate()
 
+    if len(results) % PROGRESS_PRINT_INTERVAL != 0:
+        print_completed_progress(len(results), len(tasks), force=True)
     return results
 
 
@@ -379,10 +495,19 @@ def run_relaxation_tasks(tasks, processors):
     processors = max(1, min(processors, len(tasks)))
 
     if processors == 1:
-        return [
-            relax_worker(task)
-            for task in tqdm(tasks, desc="Relaxing structures", unit="file")
-        ]
+        results = []
+        progress = tqdm(total=len(tasks), desc="Relaxing structures", unit="file")
+        try:
+            for task in tasks:
+                results.append(relax_worker(task))
+                progress.update(1)
+                print_completed_progress(len(results), len(tasks))
+        finally:
+            progress.close()
+
+        if len(results) % PROGRESS_PRINT_INTERVAL != 0:
+            print_completed_progress(len(results), len(tasks), force=True)
+        return results
 
     return run_subprocess_relaxation_tasks(tasks, processors)
 
@@ -452,6 +577,14 @@ def parse_args():
         help="Constant dielectric used during minimization. Default: 80.0",
     )
     parser.add_argument(
+        "--force-field",
+        default="OPLS4",
+        help=(
+            "Force field to request explicitly from Schrodinger Minimizer. "
+            "Default: OPLS4. Use an empty string to use the installation default."
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing relaxed output files.",
@@ -491,6 +624,7 @@ def main():
             max_steps=args.max_steps,
             grad_conv=args.grad_conv,
             dielectric_constant=args.dielectric,
+            force_field=args.force_field,
             overwrite=args.overwrite,
             verbose=args.verbose,
         )
@@ -517,6 +651,7 @@ def main():
     print(f"Max steps: {args.max_steps}")
     print(f"Gradient convergence: {args.grad_conv}")
     print(f"Dielectric constant: {args.dielectric}")
+    print(f"Force field: {args.force_field or 'installation default'}")
     requested_processors = args.processors if args.processors > 0 else (cpu_count() or 1)
     active_processors = max(1, min(requested_processors, len(structure_files)))
     print(f"Processors: {active_processors}")
@@ -530,6 +665,7 @@ def main():
             args.max_steps,
             args.grad_conv,
             args.dielectric,
+            args.force_field,
             args.overwrite,
             args.verbose,
         )

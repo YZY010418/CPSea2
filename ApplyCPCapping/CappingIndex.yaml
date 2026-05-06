@@ -1,15 +1,50 @@
-Thioether-A: # check this
+ThioEther-A:
   mode_1:
-    C_ter: "C2, N1, C1, O1, C3" # NME CA,N -- LastAA C,O,CA
-    N_ter: "C7, C6, O2, N2, C5" # ACE CA,C,O -- FirstAA N,CA
-TriAzole-A:
+    C_ter: "C9, N3, C2, O1, C1" # NME CA,N -- LastAA C,O,CA
+    N_ter: "C8, C7, O3, N2, C4" # ACE CA,C,O -- FirstAA N,CA
+ThioEther-B:
   mode_1:
-    C_ter: "C14, N7, C13, O3, C3" 
-    N_ter: "C10, C9, O1, N3, C8" 
+    C_ter: "C18, N4, C17, O3, C3" 
+    N_ter: "C14, C13, O2, N3, C10"
   mode_2:
-    C_ter: "C12, N4, C11, O2, C8" 
+    C_ter: "C12, N2, C11, O1, C10" 
     N_ter: "C1, C2, O4, N1, C3"
+ThioEther-C:
+  mode_1:
+    C_ter: "C10, N2, C9, O1, C8" 
+    N_ter: "C1, C2, O4, N1, C3" 
+  mode_2:
+    C_ter: "C20, N5, C19, O3, C3" 
+    N_ter: "C12, C11, O2, N3, C8"
+Ester-A:
+  mode_1:
+    C_ter: "C21, N4, C20, O4, C17" 
+    N_ter: "C1, C2, O6, N1, C3"
+  mode_2:
+    C_ter: "C5, N2, C4, O1, C3" 
+    N_ter: "C19, C18, O3, N3, C17"
+Alkene-A:
+  mode_1:
+    C_ter: "C12, N3, C11, O2, C10" 
+    N_ter: "C1, C2, O4, N1, C3"
+  mode_2:
+    C_ter: "C5, N2, C4, O1, C3" 
+    N_ter: "C14, C13, O3, N4, C10"
+Disulfide-A:
+  mode_1:
+    C_ter: "C5, N2, C4, O1, C3" 
+    N_ter: "C12, C11, O3, N4, C8" 
+  mode_2:
+    C_ter: "C10, N3, C9, O2, C8" 
+    N_ter: "C1, C2, O4, N1, C3"
+Triazole-A:
+  mode_1:
+    C_ter: "C5, N2, C4, O2, C3" 
+    N_ter: "C14, C13, O4, N7, C10" 
+  mode_2:
+    C_ter: "C12, N6, C11, O3, C10" 
+    N_ter: "C2, C1, O1, N1, C3"
 Amide-A:
   mode_1:
-    C_ter: "C8, N3, C7, O1, C5" # NME CA,N -- LastAA C,O,CA
-    N_ter: "C1, C2, O3, N1, C3" # ACE CA,C,O -- FirstAA N,CA
+    C_ter: "C7, N3, C6, O1, C5" 
+    N_ter: "C1, C2, O3, N1, C3"

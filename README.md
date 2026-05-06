@@ -79,12 +79,9 @@ python CalcSASA.py -i input_pdb_dir -o output_csv -n num_processors
 python plip_analysis.py -i input_pdb_dir -o output_csv -n num_processors
 python CalcGRAVY.py -i input_pdb_dir -o output_csv -n num_processors
 python Vina_analysis.py -i input_pdb_dir -o output_csv -n num_processors (--score_only)
-python FoldX_analysis.py -i input_pdb_dir -o output_csv -n num_processors
+python FoldX_analysis.py -i input_pdb_dir -o output_csv -p num_processors --repair --include_counts
 python extract_receptor_sequences.py -i input_pdb_dir -o output_fasta -n num_processors
 mmseqs easy-cluster fasta_file clusterRes tmp --min-seq-id 0.5 -c 0.8 --cov-mode 1
 ```
 
 These results are further processed and intepreted as described in our paper.
-
-## 📞 Contact
-If you have any questions, comments, or data requirements, please contact yangzy23@mails.tsinghua.edu.cn. We look forward to hear from the community!

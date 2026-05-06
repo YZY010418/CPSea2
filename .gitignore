@@ -21,3 +21,5 @@
 *.cif.gz
 
 *.sdf
+
+*.cdxml
