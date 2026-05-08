@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 from rdkit import Chem
@@ -18,6 +19,37 @@ from rdkit.ML.Cluster import Butina
 
 _RMSD_WORKER_MOLS = None
 _RMSD_WORKER_ATOM_MAP = None
+SDF_SUFFIXES = {".sdf", ".sd"}
+BATCH_HISTORY_FIELDS = [
+    "batch",
+    "seed",
+    "generated_count",
+    "relaxed_count",
+    "energy_evaluable_total",
+    "energy_keep_percent",
+    "energy_cutoff",
+    "energy_kept_count",
+    "accepted_total",
+    "cluster_count",
+    "cluster_gain",
+    "low_gain_streak",
+]
+CONFORMER_SUMMARY_FIELDS = [
+    "entry_id",
+    "batch",
+    "source_file",
+    "archive_file",
+    "accepted_file",
+    "energy_kj_per_mol",
+]
+
+
+@dataclass(frozen=True)
+class WorkflowPaths:
+    root: Path
+    archive: Path
+    accepted: Path
+    batches: Path
 
 
 def run_cmd(cmd, cwd=None):
@@ -82,8 +114,7 @@ def validate_same_topology(mols):
         return
     template = tuple(atom.GetAtomicNum() for atom in mols[0].GetAtoms())
     for idx, mol in enumerate(mols[1:], start=1):
-        atom_types = tuple(atom.GetAtomicNum() for atom in mol.GetAtoms())
-        if atom_types != template:
+        if tuple(atom.GetAtomicNum() for atom in mol.GetAtoms()) != template:
             raise ValueError(
                 f"Molecule topology mismatch before clustering at index {idx}: "
                 "atom ordering/types differ."
@@ -137,10 +168,7 @@ def compute_pairwise_rmsd_results(mols, index_pairs, atom_map, processes=1):
 
     pair_count = len(index_pairs)
     chunk_size = max(100, min(5000, pair_count // (worker_count * 8) or 1))
-    chunks = [
-        index_pairs[start:start + chunk_size]
-        for start in range(0, len(index_pairs), chunk_size)
-    ]
+    chunks = [index_pairs[i:i + chunk_size] for i in range(0, len(index_pairs), chunk_size)]
 
     results = []
     try:
@@ -175,22 +203,22 @@ def cached_pairwise_rmsd_distances(entries, rmsd_cache, processes=1):
     validate_same_topology(mols)
     atom_map = fixed_heavy_atom_map(mols[0])
 
-    missing_pairs = []
-    for i in range(1, n_mols):
-        for j in range(i):
-            key = rmsd_cache_key(entries[i], entries[j])
-            if key not in rmsd_cache:
-                missing_pairs.append((i, j))
+    missing_pairs = [
+        (i, j)
+        for i in range(1, n_mols)
+        for j in range(i)
+        if rmsd_cache_key(entries[i], entries[j]) not in rmsd_cache
+    ]
 
     for i, j, distance in compute_pairwise_rmsd_results(mols, missing_pairs, atom_map, processes=processes):
         key = rmsd_cache_key(entries[i], entries[j])
         rmsd_cache[key] = distance
 
-    distances = []
-    for i in range(1, n_mols):
-        for j in range(i):
-            distances.append(rmsd_cache[rmsd_cache_key(entries[i], entries[j])])
-    return distances
+    return [
+        rmsd_cache[rmsd_cache_key(entries[i], entries[j])]
+        for i in range(1, n_mols)
+        for j in range(i)
+    ]
 
 
 def cluster_count_from_distances(distances, n_mols, rmsd_cutoff):
@@ -216,36 +244,23 @@ def cluster_count_from_distances(distances, n_mols, rmsd_cutoff):
     return len(clusters)
 
 
-def pairwise_rmsd_cluster_count(mols, rmsd_cutoff, processes=1):
-    validate_same_topology(mols)
-    entries = [
-        {"entry_id": idx, "mol": mol}
-        for idx, mol in enumerate(mols)
-    ]
-    distances = cached_pairwise_rmsd_distances(entries, {}, processes=processes)
-    return cluster_count_from_distances(distances, len(mols), rmsd_cutoff)
-
-
 def collect_relaxed_sdfs(relaxed_dir):
-    files = []
-    for path in sorted(Path(relaxed_dir).iterdir()):
-        if not path.is_file():
-            continue
-        if path.suffix.lower() not in {".sdf", ".sd"}:
-            continue
-        files.append(path)
-    return files
+    return [
+        path
+        for path in sorted(Path(relaxed_dir).iterdir())
+        if path.is_file() and path.suffix.lower() in SDF_SUFFIXES
+    ]
+
+
+def count_sdfs(path):
+    return len(collect_relaxed_sdfs(path))
 
 
 def copy_cap_sidecars(source_dir, target_dir):
-    copied_sidecars = set()
-    for path in Path(source_dir).iterdir():
-        if not path.is_file() or not path.name.endswith("_atom_names.csv"):
-            continue
+    for path in Path(source_dir).glob("*_atom_names.csv"):
         target = Path(target_dir) / path.name
-        if path.name not in copied_sidecars and not target.exists():
+        if not target.exists():
             shutil.copy2(path, target)
-            copied_sidecars.add(path.name)
 
 
 def archive_relaxed_sdfs(relaxed_dir, archive_dir, batch_idx, start_entry_id):
@@ -312,30 +327,15 @@ def rebuild_accepted_dir(selected_entries, all_entries, accepted_dir, archive_di
 
 
 def write_batch_history(path, rows):
-    fieldnames = [
-        "batch",
-        "seed",
-        "generated_count",
-        "relaxed_count",
-        "energy_evaluable_total",
-        "energy_keep_percent",
-        "energy_cutoff",
-        "energy_kept_count",
-        "accepted_total",
-        "cluster_count",
-        "cluster_gain",
-        "low_gain_streak",
-    ]
     with open(path, "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=BATCH_HISTORY_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
 
 
 def write_conformer_summary(path, entries):
-    fieldnames = ["entry_id", "batch", "source_file", "archive_file", "accepted_file", "energy_kj_per_mol"]
     with open(path, "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=CONFORMER_SUMMARY_FIELDS)
         writer.writeheader()
         for entry in entries:
             writer.writerow(
@@ -359,68 +359,154 @@ def build_schrodinger_run_path(explicit_path=None):
     return Path("run")
 
 
+def make_workflow_paths(output_root):
+    root = Path(output_root).expanduser().resolve()
+    paths = WorkflowPaths(
+        root=root,
+        archive=root / "all_relaxed_sdf",
+        accepted=root / "accepted_energy_filtered_sdf",
+        batches=root / "batches",
+    )
+    for path in (paths.root, paths.archive, paths.accepted, paths.batches):
+        path.mkdir(parents=True, exist_ok=True)
+    return paths
+
+
+def make_batch_dirs(paths, batch_idx):
+    batch_dir = paths.batches / f"batch_{batch_idx:04d}"
+    generated_dir = batch_dir / "generated"
+    relaxed_dir = batch_dir / "relaxed"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    relaxed_dir.mkdir(parents=True, exist_ok=True)
+    return batch_dir, generated_dir, relaxed_dir
+
+
+def run_capping_generation(args, capping_gen_script, batch_name, generated_dir, seed):
+    run_cmd([
+        args.python, str(capping_gen_script),
+        "--name", batch_name,
+        "--smiles", args.smiles,
+        "--num", str(args.batch_size),
+        "--out", str(generated_dir),
+        "--seed", str(seed),
+    ])
+
+
+def run_relaxation(args, schrodinger_run, relax_light_script, generated_dir, relaxed_dir):
+    run_cmd([
+        str(schrodinger_run), "python3", str(relax_light_script),
+        "-i", str(generated_dir),
+        "-o", str(relaxed_dir),
+        "--ligand-asl", args.ligand_asl,
+        "--hydrogen-scope", args.hydrogen_scope,
+        "--max-steps", str(args.max_steps),
+        "--grad-conv", str(args.grad_conv),
+        "--dielectric", str(args.dielectric),
+        "-p", str(args.processors),
+    ])
+
+
+def build_batch_row(
+    batch_idx,
+    seed,
+    generated_dir,
+    relaxed_dir,
+    all_relaxed_entries,
+    accepted_entries,
+    energy_keep_percent,
+    energy_cutoff,
+    cluster_count,
+    cluster_gain,
+    low_gain_streak,
+):
+    return {
+        "batch": batch_idx,
+        "seed": seed,
+        "generated_count": count_sdfs(generated_dir),
+        "relaxed_count": count_sdfs(relaxed_dir),
+        "energy_evaluable_total": len(all_relaxed_entries),
+        "energy_keep_percent": f"{energy_keep_percent:.6g}",
+        "energy_cutoff": "" if energy_cutoff is None else f"{energy_cutoff:.6f}",
+        "energy_kept_count": len(accepted_entries),
+        "accepted_total": len(accepted_entries),
+        "cluster_count": cluster_count,
+        "cluster_gain": cluster_gain,
+        "low_gain_streak": low_gain_streak,
+    }
+
+
+def print_batch_status(row, energy_cutoff):
+    energy_cutoff_text = "NA" if energy_cutoff is None else f"{energy_cutoff:.3f}"
+    print(
+        f"Generated: {row['generated_count']}, relaxed: {row['relaxed_count']}, "
+        f"energy-evaluable(total): {row['energy_evaluable_total']}, "
+        f"energy-kept: {row['energy_kept_count']}, "
+        f"energy cutoff: {energy_cutoff_text}, "
+        f"clusters(total): {row['cluster_count']}, "
+        f"cluster gain: {row['cluster_gain']}, low-gain streak: {row['low_gain_streak']}"
+    )
+
+
+def write_final_outputs(paths, all_relaxed_entries, accepted_entries, batch_rows):
+    batch_history_csv = paths.root / "batch_history.csv"
+    all_relaxed_csv = paths.root / "all_relaxed_conformers.csv"
+    accepted_csv = paths.root / "accepted_energy_filtered_conformers.csv"
+
+    write_batch_history(batch_history_csv, batch_rows)
+    write_conformer_summary(all_relaxed_csv, all_relaxed_entries)
+    write_conformer_summary(accepted_csv, accepted_entries)
+    return batch_history_csv, all_relaxed_csv, accepted_csv
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description=(
-            "Iteratively generate and relax cap conformers, keep a global lowest-energy "
-            "percentile, and stop when cluster growth saturates."
-        )
+        description="Iteratively generate, relax, energy-filter, and cluster cap conformers.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--name", required=True, help="Cap name prefix.")
-    parser.add_argument("--smiles", required=True, help="Cap SMILES.")
-    parser.add_argument("--out", required=True, help="Output root directory.")
-    parser.add_argument("--batch-size", type=int, required=True, help="Conformers generated per batch.")
-    parser.add_argument("--max-batches", type=int, default=50, help="Maximum number of batches.")
-    parser.add_argument("--seed-start", type=int, default=42, help="First batch seed; each next batch uses +1.")
-    parser.add_argument("--cluster-rmsd", type=float, default=0.5, help="RMSD threshold for Butina clustering.")
-    parser.add_argument(
-        "--min-cluster-increase",
-        type=int,
-        default=5,
-        help="Minimum cluster increase per batch before counting as saturation.",
-    )
-    parser.add_argument(
-        "--patience",
-        type=int,
-        default=3,
-        help="Stop when cluster increase < min-cluster-increase for this many consecutive batches.",
-    )
-    parser.add_argument(
-        "--schrodinger-run",
-        default=None,
-        help="Path to Schrodinger run launcher. Default: $SCHRODINGER/run",
-    )
-    parser.add_argument("--python", default=sys.executable, help="Python executable for CappingGen.py.")
-    parser.add_argument("-p", "--processors", type=int, default=1, help="Processors for relax_light.py.")
-    parser.add_argument(
-        "--cluster-processors",
-        type=int,
-        default=None,
-        help="Processes for RMSD clustering. Default: same as --processors.",
-    )
-    parser.add_argument("--ligand-asl", default='chain.name "A"', help="Ligand ASL for relax_light.py.")
-    parser.add_argument("--hydrogen-scope", choices=["all", "ligand"], default="all")
-    parser.add_argument("--max-steps", type=int, default=200)
-    parser.add_argument("--grad-conv", type=float, default=0.05)
-    parser.add_argument("--dielectric", type=float, default=80.0)
-    parser.add_argument(
-        "--force-field",
-        default="OPLS4",
-        help="Force field passed to relax_light.py. Default: OPLS4.",
-    )
-    parser.add_argument(
-        "--energy-keep-percent",
-        type=float,
-        default=90.0,
-        help=(
-            "Keep this lowest-energy percentage among all relaxed conformers sampled "
-            "so far for this cap. Use 100 to disable energy percentile filtering. Default: 90."
-        ),
-    )
+    inputs = parser.add_argument_group("required inputs")
+    for flag, help_text in (
+        ("--name", "Cap name prefix."),
+        ("--smiles", "Cap SMILES."),
+        ("--out", "Output root directory."),
+    ):
+        inputs.add_argument(flag, required=True, help=help_text)
+
+    sampling = parser.add_argument_group("sampling and stopping")
+    sampling.add_argument("--batch-size", type=int, default=1000, help="Conformers generated per batch.")
+    sampling.add_argument("--max-batches", type=int, default=50, help="Maximum number of batches.")
+    sampling.add_argument("--seed-start", type=int, default=42, help="First batch seed; each next batch uses +1.")
+    sampling.add_argument("--cluster-rmsd", type=float, default=0.5, help="RMSD threshold for Butina clustering.")
+    sampling.add_argument("--min-cluster-increase", type=int, default=5, help="Low-gain threshold.")
+    sampling.add_argument("--patience", type=int, default=3, help="Consecutive low-gain batches before stopping.")
+    sampling.add_argument("--energy-keep-percent", type=float, default=90.0, help="Lowest-energy percent to keep; 100 disables filtering.")
+
+    runtime = parser.add_argument_group("runtime")
+    runtime.add_argument("--schrodinger-run", default=None, help="Schrodinger run launcher; defaults to $SCHRODINGER/run or run on PATH.")
+    runtime.add_argument("--python", default=sys.executable, help="Python executable for CappingGen.py.")
+    runtime.add_argument("-p", "--processors", type=int, default=1, help="Processors for relax_light.py.")
+    runtime.add_argument("--cluster-processors", type=int, default=None, help="Processes for RMSD clustering; defaults to --processors.")
+
+    relaxation = parser.add_argument_group("relax_light controls")
+    relaxation.add_argument("--ligand-asl", default='chain.name "A"', help="Ligand ASL for relax_light.py.")
+    relaxation.add_argument("--hydrogen-scope", choices=["all", "ligand"], default="all")
+    relaxation.add_argument("--max-steps", type=int, default=200)
+    relaxation.add_argument("--grad-conv", type=float, default=0.05)
+    relaxation.add_argument("--dielectric", type=float, default=80.0)
+
     parser.add_argument("--keep-batches", action="store_true", help="Keep generated/relaxed files for each batch.")
     args = parser.parse_args()
-    if args.processors < 1:
-        parser.error("--processors must be >= 1")
+    for attr, label in (
+        ("batch_size", "--batch-size"),
+        ("max_batches", "--max-batches"),
+        ("patience", "--patience"),
+        ("processors", "--processors"),
+    ):
+        if getattr(args, attr) < 1:
+            parser.error(f"{label} must be >= 1")
+    if args.cluster_rmsd <= 0:
+        parser.error("--cluster-rmsd must be > 0")
+    if args.min_cluster_increase < 0:
+        parser.error("--min-cluster-increase must be >= 0")
     if args.cluster_processors is not None and args.cluster_processors < 1:
         parser.error("--cluster-processors must be >= 1")
     if not (0.0 < args.energy_keep_percent <= 100.0):
@@ -435,15 +521,7 @@ def main():
     relax_light_script = script_dir / "relax_light.py"
     schrodinger_run = build_schrodinger_run_path(args.schrodinger_run)
     cluster_processes = args.cluster_processors or args.processors
-
-    output_root = Path(args.out).expanduser().resolve()
-    archive_dir = output_root / "all_relaxed_sdf"
-    accepted_dir = output_root / "accepted_energy_filtered_sdf"
-    batches_dir = output_root / "batches"
-    output_root.mkdir(parents=True, exist_ok=True)
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    accepted_dir.mkdir(parents=True, exist_ok=True)
-    batches_dir.mkdir(parents=True, exist_ok=True)
+    paths = make_workflow_paths(args.out)
 
     all_relaxed_entries = []
     accepted_entries = []
@@ -455,63 +533,20 @@ def main():
     for batch_idx in range(1, args.max_batches + 1):
         seed = args.seed_start + batch_idx - 1
         batch_name = f"{args.name}_b{batch_idx:04d}"
-        batch_dir = batches_dir / f"batch_{batch_idx:04d}"
-        generated_dir = batch_dir / "generated"
-        relaxed_dir = batch_dir / "relaxed"
-        generated_dir.mkdir(parents=True, exist_ok=True)
-        relaxed_dir.mkdir(parents=True, exist_ok=True)
+        batch_dir, generated_dir, relaxed_dir = make_batch_dirs(paths, batch_idx)
 
         print(f"\n=== Batch {batch_idx} ===")
         print(f"Seed: {seed}")
         print("Step 1/4: generating conformers")
-        run_cmd(
-            [
-                args.python,
-                str(capping_gen_script),
-                "--name",
-                batch_name,
-                "--smiles",
-                args.smiles,
-                "--num",
-                str(args.batch_size),
-                "--out",
-                str(generated_dir),
-                "--seed",
-                str(seed),
-            ]
-        )
+        run_capping_generation(args, capping_gen_script, batch_name, generated_dir, seed)
 
         print("Step 2/4: relaxing conformers")
-        run_cmd(
-            [
-                str(schrodinger_run),
-                "python3",
-                str(relax_light_script),
-                "-i",
-                str(generated_dir),
-                "-o",
-                str(relaxed_dir),
-                "--ligand-asl",
-                args.ligand_asl,
-                "--hydrogen-scope",
-                args.hydrogen_scope,
-                "--max-steps",
-                str(args.max_steps),
-                "--grad-conv",
-                str(args.grad_conv),
-                "--dielectric",
-                str(args.dielectric),
-                "--force-field",
-                args.force_field,
-                "-p",
-                str(args.processors),
-            ]
-        )
+        run_relaxation(args, schrodinger_run, relax_light_script, generated_dir, relaxed_dir)
 
         print(f"Step 3/4: archiving relaxed conformers and keeping lowest {args.energy_keep_percent:g}% by energy")
         batch_archived = archive_relaxed_sdfs(
             relaxed_dir,
-            archive_dir,
+            paths.archive,
             batch_idx,
             start_entry_id=len(all_relaxed_entries),
         )
@@ -520,16 +555,11 @@ def main():
             all_relaxed_entries,
             args.energy_keep_percent,
         )
-        rebuild_accepted_dir(accepted_entries, all_relaxed_entries, accepted_dir, archive_dir)
+        rebuild_accepted_dir(accepted_entries, all_relaxed_entries, paths.accepted, paths.archive)
 
         print(f"Step 4/4: clustering accepted conformers ({cluster_processes} process(es))")
-        cluster_distances = cached_pairwise_rmsd_distances(
-            accepted_entries,
-            rmsd_cache,
-            processes=cluster_processes,
-        )
         cluster_count = cluster_count_from_distances(
-            cluster_distances,
+            cached_pairwise_rmsd_distances(accepted_entries, rmsd_cache, cluster_processes),
             len(accepted_entries),
             args.cluster_rmsd,
         )
@@ -541,30 +571,21 @@ def main():
         else:
             low_gain_streak = 0
 
-        generated_count = len(list(generated_dir.glob("*.sdf"))) + len(list(generated_dir.glob("*.sd")))
-        relaxed_count = len(collect_relaxed_sdfs(relaxed_dir))
-        row = {
-            "batch": batch_idx,
-            "seed": seed,
-            "generated_count": generated_count,
-            "relaxed_count": relaxed_count,
-            "energy_evaluable_total": len(all_relaxed_entries),
-            "energy_keep_percent": f"{args.energy_keep_percent:.6g}",
-            "energy_cutoff": "" if energy_cutoff is None else f"{energy_cutoff:.6f}",
-            "energy_kept_count": len(accepted_entries),
-            "accepted_total": len(accepted_entries),
-            "cluster_count": cluster_count,
-            "cluster_gain": cluster_gain,
-            "low_gain_streak": low_gain_streak,
-        }
-        batch_rows.append(row)
-        print(
-            f"Generated: {generated_count}, relaxed: {relaxed_count}, "
-            f"energy-evaluable(total): {len(all_relaxed_entries)}, "
-            f"energy-kept: {len(accepted_entries)}, "
-            f"energy cutoff: {'NA' if energy_cutoff is None else f'{energy_cutoff:.3f}'}, "
-            f"clusters(total): {cluster_count}, cluster gain: {cluster_gain}, low-gain streak: {low_gain_streak}"
+        row = build_batch_row(
+            batch_idx,
+            seed,
+            generated_dir,
+            relaxed_dir,
+            all_relaxed_entries,
+            accepted_entries,
+            args.energy_keep_percent,
+            energy_cutoff,
+            cluster_count,
+            cluster_gain,
+            low_gain_streak,
         )
+        batch_rows.append(row)
+        print_batch_status(row, energy_cutoff)
 
         if not args.keep_batches:
             shutil.rmtree(batch_dir, ignore_errors=True)
@@ -576,12 +597,12 @@ def main():
             )
             break
 
-    batch_history_csv = output_root / "batch_history.csv"
-    all_relaxed_csv = output_root / "all_relaxed_conformers.csv"
-    accepted_csv = output_root / "accepted_energy_filtered_conformers.csv"
-    write_batch_history(batch_history_csv, batch_rows)
-    write_conformer_summary(all_relaxed_csv, all_relaxed_entries)
-    write_conformer_summary(accepted_csv, accepted_entries)
+    batch_history_csv, all_relaxed_csv, accepted_csv = write_final_outputs(
+        paths,
+        all_relaxed_entries,
+        accepted_entries,
+        batch_rows,
+    )
 
     print("\n=== Auto Conformer Summary ===")
     print(f"Relaxed conformers with readable energy: {len(all_relaxed_entries)}")
@@ -589,8 +610,8 @@ def main():
     if batch_rows:
         print(f"Final cluster count: {batch_rows[-1]['cluster_count']}")
         print(f"Batches run: {batch_rows[-1]['batch']}")
-    print(f"All relaxed SDF directory: {archive_dir}")
-    print(f"Accepted SDF directory: {accepted_dir}")
+    print(f"All relaxed SDF directory: {paths.archive}")
+    print(f"Accepted SDF directory: {paths.accepted}")
     print(f"Batch history CSV: {batch_history_csv}")
     print(f"All relaxed conformer CSV: {all_relaxed_csv}")
     print(f"Accepted conformer CSV: {accepted_csv}")
