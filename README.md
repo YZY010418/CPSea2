@@ -101,14 +101,15 @@ The relaxed output directory contains the final cyclic peptide binder complexes.
 
 ## 📈 Evaluations
 
-We evaluate complex structures using tools including BSA, PLIP, GRAVY, Vina and FoldX. We also evaluate the redundancy by clustering complexes based on receptor sequences using MMSeqs2. These analysis scripts can be used as following:
+We evaluate complex structures using tools including BSA, PLIP, GRAVY, Vina and FoldX. The SASA, PLIP, Vina, and FoldX scripts use `--input-type` to select the expected input layout, such as `pdb`, `cpsea2`, `cpsea2afdb`, `pepbench`, or `pdb-chain`. We also evaluate redundancy by clustering complexes based on receptor sequences using MMSeqs2. These analysis scripts can be used as follows:
 
 ```bash
-python CalcSASA.py -i input_pdb_dir -o output_csv -n num_processors
-python plip_analysis.py -i input_pdb_dir -o output_csv -n num_processors
+python Evaluations/SufficientContact/CalcSASA.py --input-type pdb-chain -i input_pdb_dir -o output_csv -n num_processors
+python Evaluations/Interactions/plip_analysis.py --input-type cpsea2 -i input_cif_dir --output-all output_csv -j num_processors
+python Evaluations/Interactions/plip_analysis.py --input-type pepbench -i input_pdb_dir -o output_csv -j num_processors
 python CalcGRAVY.py -i input_pdb_dir -o output_csv -n num_processors
-python Vina_analysis.py -i input_pdb_dir -o output_csv -n num_processors (--score_only)
-python FoldX_analysis.py -i input_pdb_dir -o output_csv -p num_processors --repair --include_counts
+python Evaluations/InterfaceEnergy/Vina_analysis.py --input-type pdb -i input_pdb_dir -o output_csv -p num_processors (--score_only)
+python Evaluations/InterfaceEnergy/FoldX_analysis.py --input-type pdb -i input_pdb_dir -o output_csv -p num_processors --repair --include_counts
 python extract_receptor_sequences.py -i input_pdb_dir -o output_fasta -n num_processors
 mmseqs easy-cluster fasta_file clusterRes tmp --min-seq-id 0.5 -c 0.8 --cov-mode 1
 ```
