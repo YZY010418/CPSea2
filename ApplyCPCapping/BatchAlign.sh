@@ -1,8 +1,0 @@
-python CappingAlignBatch.py --base ../FindCPBase/CPSea2.0_PDB/Clusters_PDB70/ --cap Amide-A/accepted_energy_filtered_sdf/ --index CappingIndex.yaml --cap-name Amide-A -o Amide-A_Matched -p 96
-python CappingAlignBatch.py --base ../FindCPBase/CPSea2.0_PDB/Clusters_PDB70/ --cap ThioEther-A/accepted_energy_filtered_sdf/ --index CappingIndex.yaml --cap-name ThioEther-A -o ThioEther-A_Matched -p 96
-python CappingAlignBatch.py --base ../FindCPBase/CPSea2.0_PDB/Clusters_PDB70/ --cap ThioEther-B/accepted_energy_filtered_sdf/ --index CappingIndex.yaml --cap-name ThioEther-B -o ThioEther-B_Matched -p 96
-python CappingAlignBatch.py --base ../FindCPBase/CPSea2.0_PDB/Clusters_PDB70/ --cap ThioEther-C/accepted_energy_filtered_sdf/ --index CappingIndex.yaml --cap-name ThioEther-C -o ThioEther-C_Matched -p 96
-python CappingAlignBatch.py --base ../FindCPBase/CPSea2.0_PDB/Clusters_PDB70/ --cap Ester-A/accepted_energy_filtered_sdf/ --index CappingIndex.yaml --cap-name Ester-A -o Ester-A_Matched -p 96
-python CappingAlignBatch.py --base ../FindCPBase/CPSea2.0_PDB/Clusters_PDB70/ --cap Alkene-A/accepted_energy_filtered_sdf/ --index CappingIndex.yaml --cap-name Alkene-A -o Alkene-A_Matched -p 96
-python CappingAlignBatch.py --base ../FindCPBase/CPSea2.0_PDB/Clusters_PDB70/ --cap Disulfide-A/accepted_energy_filtered_sdf/ --index CappingIndex.yaml --cap-name Disulfide-A -o Disulfide-A_Matched -p 96
-python CappingAlignBatch.py --base ../FindCPBase/CPSea2.0_PDB/Clusters_PDB70/ --cap TriAzole-A/accepted_energy_filtered_sdf/ --index CappingIndex.yaml --cap-name TriAzole-A -o TriAzole-A_Matched -p 96
