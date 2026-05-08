@@ -1,18 +1,22 @@
 ## CPSea2: Combine linear and cyclic peptide data for Arbitrary Cycliczation
 
-😊 Hi there, this is the repo for **CPSea2**, an *"upgraded"* synthetic dataset for cyclic peptide binder design from the previous [**CPSea**](https://github.com/YZY010418/CPSea), aiming to be compatible with diverse cyclization structures with better cost-effectiveness and structural rationality.
+😊 Hi there, this is the repo for **CPSea2**, a framework for data synthesis of cyclic peptide binders with diverse terminal structures.
 
-💎 **Core Consistency**:
+🗺️ This repo provides protocols for the curation of CPbase, CPcap, and the merging between them. We also provide scripts for some evaluations on the datasets. You may visit [**Hugging Face**](https://huggingface.co/datasets/YZY010418/CPSea2) for downloading constructed datasets, and you may find our generative model for structurally diverse and geometry plausible cyclic peptide binder design trained on CPbase_PDB named [**PepAny**](https://github.com/YZY010418/CPSea2). 
+
+CPSea2 is named after our previous synthetic dataset for cyclic peptide binder design named [**CPSea**](https://github.com/YZY010418/CPSea). With the core idea of *mimicking inter-chain interactions by intra-protein interfaces*, we upgrade the whole pipeline aiming to be compatible with diverse cyclization structures with better cost-effectiveness and structural rationality:
+
+💎 **What's Consist**:
 
 * The idea of mimicking inter-chain interactions by intra-chain interfaces.
 * Overall framework of how we screen out plausible binders.
 
-💪 **Major Upgrades**:
+💪 **What's new**:
 
 * The idea of generating cyclic peptides by merging a linear peptide and a capping structure, enabling arbitraray cyclization structures with more reasonable geometry.
 * Re-designed filters enabling more desirable synthetic complex data that align better to experimental datasets.
 
-🗺️ This repo provides protocols for the curation of CPSea2, the merging between CPSea2 and CPcapping, and some metrics for evaluations on the dataset. You may download constructed CPSea2 in [**Zenodo**](https://github.com/YZY010418/CPSea2), and you may find the generative model trained on CPSea2 in [**PepAny**](https://github.com/YZY010418/CPSea2). 
+
 
 
 ## 🔍 Find CPbase
@@ -31,7 +35,7 @@ where source_data_names.list should be a list file with a stem name of a source 
 
 AFDB_multimer has been released recently, and has not been involved in current version of CPSea2 yet because we have not found a separate package for download. Nonetheless, we believe these data can be employed by a similar script as that used for PDB, with an additional filter on pLDDT. We will try including these data in future work.
 
-## 🔗 Apply CPcapping
+## 🎲 Sample CPcap
 
 We first generate plausible conformations for capping structures, then align and merge them with CPbase peptides. Alternatively, one may generate linear peptide binders as CPbase, so that more diverse terminal relative positions can be involved. Related discussions and instructions can be found in the **PepAny** repo.
 
@@ -69,6 +73,9 @@ python $Schrodinger/run python3 relax_light.py -i input_dir -o output_dir -p num
 ```
 
 Now we have finished the merging process and have cyclic peptide binders in hands.
+
+## 🔗 Merge CPcap and CPbase
+
 
 ## 📈 Evaluations
 
