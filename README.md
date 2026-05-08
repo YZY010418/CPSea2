@@ -1,23 +1,23 @@
 ## CPSea2: Combine linear and cyclic peptide data for Arbitrary Cycliczation
 
+![CPSea2 overview](Figures/MainFigure.png)
+
 😊 Hi there, this is the repo for **CPSea2**, a framework for data synthesis of cyclic peptide binders with diverse terminal structures.
 
 🗺️ This repo provides protocols for the curation of CPbase, CPcap, and the merging between them. We also provide scripts for some evaluations on the datasets. You may visit [**Hugging Face**](https://huggingface.co/datasets/YZY010418/CPSea2) for downloading constructed datasets, and you may find our generative model for structurally diverse and geometry plausible cyclic peptide binder design trained on CPbase_PDB named [**PepAny**](https://github.com/YZY010418/CPSea2). 
 
 CPSea2 is named after our previous synthetic dataset for cyclic peptide binder design named [**CPSea**](https://github.com/YZY010418/CPSea). With the core idea of *mimicking inter-chain interactions by intra-protein interfaces*, we upgrade the whole pipeline aiming to be compatible with diverse cyclization structures with better cost-effectiveness and structural rationality:
 
-💎 **What's Consist**:
+💎 **What's inherited**:
 
 * The idea of mimicking inter-chain interactions by intra-chain interfaces.
-* Overall framework of how we screen out plausible binders.
+* Overall pipeline of screening plausible binder-receptor pairs.
 
 💪 **What's new**:
 
-* The idea of generating cyclic peptides by merging a linear peptide and a capping structure, enabling arbitraray cyclization structures with more reasonable geometry.
-* Re-designed filters enabling more desirable synthetic complex data that align better to experimental datasets.
-
-
-
+* Constructing cyclic peptides by merging linear peptides and capping structures, insead of declare covalent bonds and expect energy minimization to recovery reasonable conformations.
+* Expanding the scope of peptide binders to linear peptides, leading to a size increasement of over 100 times.
+* Re-designing filters to make synthetic data align better to experimental references, such as contact density and interface hydrophobicity.
 
 ## 🔍 Find CPbase
 
