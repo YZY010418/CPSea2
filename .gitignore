@@ -21,3 +21,9 @@
 *.sdf
 
 *.cdxml
+
+# Local-only source and working directories
+/FindCPBase/
+/output/
+/scripts/
+/tests/
