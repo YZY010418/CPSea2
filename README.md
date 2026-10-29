@@ -5,7 +5,7 @@
 😊 Hi there, this is  **CPSea2**, a synthetic data framework for (cyclic) peptide binder design.
 
 🗺️ **Roadmap**
-* Dataset Download: [**Hugging Face**](https://huggingface.co/datasets/YZY010418/CPSea2)
+* Dataset Download: [**CPSea2 at Hugging Face**](https://huggingface.co/datasets/YZY010418/CPSea2)
 * A Model Demo: [**PepAny**](https://github.com/YZY010418/PepAny)
 * Previous Dataset: [**CPSea**](https://github.com/YZY010418/CPSea)
 
