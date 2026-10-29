@@ -2,11 +2,16 @@
 
 ![CPSea2 overview](Figures/MainFigure.png)
 
-😊 Hi there, this is the repo for **CPSea2**, a framework for data synthesis of cyclic peptide binders with diverse terminal structures.
+😊 Hi there, this is  **CPSea2**, a synthetic data framework for (cyclic) peptide binder design.
 
-🗺️ This repo provides protocols for the curation of CPbase, CPcap, and the merging between them. We also provide scripts for some evaluations on the datasets. You may visit [**Hugging Face**](https://huggingface.co/datasets/YZY010418/CPSea2) for downloading constructed datasets, and you may find our generative model for structurally diverse and geometry plausible cyclic peptide binder design trained on CPbase_PDB named [**PepAny**](https://anonymous.4open.science/r/PepAny-616A/). 
+🗺️ **Roadmap**
+* Dataset Download: [**Hugging Face**](https://huggingface.co/datasets/YZY010418/CPSea2)
+* A Model Demo: [**PepAny**](https://github.com/YZY010418/PepAny)
+* Previous Dataset: [**CPSea**](https://github.com/YZY010418/CPSea)
 
-**CPSea2** is named after our previous synthetic dataset for cyclic peptide binder design named [**CPSea**](https://github.com/YZY010418/CPSea). With the core idea of *mimicking inter-chain interactions by intra-protein interfaces*, we upgrade the whole pipeline aiming to be compatible with diverse cyclization structures with better cost-effectiveness and structural rationality:
+This repo provides protocols for the curation of CPbase, CPcap, and the merging between them. We also provide scripts for some evaluations on the dataset. You may visit [**Hugging Face**](https://huggingface.co/datasets/YZY010418/CPSea2) for downloading constructed datasets, and you may find our [**PepAny**](https://github.com/YZY010418/PepAny) as a model demo to explore the feasibility of constructing cyclic peptides with the merging protocol. 
+
+**CPSea2** is named after our previous synthetic dataset for cyclic peptide binder design named [**CPSea**](https://github.com/YZY010418/CPSea). 
 
 💎 **What's inherited**:
 
@@ -15,9 +20,11 @@
 
 💪 **What's new**:
 
-* Constructing cyclic peptides by merging linear peptides and capping structures, insead of declare covalent bonds and expect energy minimization to recovery reasonable conformations.
-* Expanding the scope of peptide binders to linear peptides, leading to a size increasement of over 100 times.
-* Re-designing filters to make synthetic data align better to experimental references, such as contact density and interface hydrophobicity.
+* Expanding the scope of peptide binders to linear peptides.
+* Re-designing filters to make synthetic data align better to experimental references.
+* Constructing cyclic peptides by merging linear peptides and capping structures.
+
+---
 
 ## 🔍 Get CPbase
 
