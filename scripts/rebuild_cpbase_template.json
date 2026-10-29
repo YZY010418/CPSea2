@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {"op": "range", "field": "Length", "min": 5, "max": 12},
+    {"op": "range", "field": "relBSA", "min": 0.35},
+    {"op": "range", "field": "SheetRatio", "max": 0.5},
+    {"op": "range", "field": "rel_n_rBSA", "min": 0.4},
+    {"op": "range", "field": "rel_c_rBSA", "min": 0.4},
+    {"op": "relative", "scope": "cluster", "field": "relBSA", "stat": "max", "mode": "ratio", "min": 0.9},
+    {"op": "top", "scope": "cluster", "field": "relBSA", "n": 1, "order": "desc", "ties": "truncate"}
+  ]
+}
