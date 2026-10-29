@@ -1,4 +1,4 @@
-## CPSea2: Combine linear and cyclic peptide data for Arbitrary Cycliczation
+## CPSea2: Synthetic data supporting both linear and cyclic peptide design
 
 ![CPSea2 overview](Figures/MainFigure.png)
 
