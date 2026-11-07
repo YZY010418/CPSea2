@@ -51,15 +51,12 @@ Use [`scripts/rebuild_cpbase.py`](scripts/rebuild_cpbase.py) to select a **CPbas
 Run the following commands from this repository's root. Set the metadata, ResID map, and extracted AFDB50 paths to your local directories (the examples use `./CPSea2/CPbase_AFDB/{Metadata,ResID_Map}` and `./afdb50`). Metadata and ResID inputs must be separate TSV or TSV.gz files/directories; directory scanning is recursive.
 
 ```bash
-# Copy the selection template and edit its rules for your use case.
-cp scripts/rebuild_cpbase_template.json cpbase_selection.json
-
 # Preview selection and check metadata/ResID joins and source file paths.
 python3 scripts/rebuild_cpbase.py \
   --metadata ./CPSea2/CPbase_AFDB/Metadata \
   --resid ./CPSea2/CPbase_AFDB/ResID_Map \
   --source-dir ./afdb50 \
-  --config cpbase_selection.json \
+  --config scripts/rebuild_cpbase_template.json \
   --output ./CPbase_subset_preview \
   --dry-run
 
@@ -68,14 +65,14 @@ python3 scripts/rebuild_cpbase.py \
   --metadata ./CPSea2/CPbase_AFDB/Metadata \
   --resid ./CPSea2/CPbase_AFDB/ResID_Map \
   --source-dir ./afdb50 \
-  --config cpbase_selection.json \
+  --config scripts/rebuild_cpbase_template.json \
   --output ./CPbase_subset \
   --gzip
 ```
 
 `--dry-run` does not read source coordinates or validate their atoms. Each output directory must not already exist. `--gzip` writes compressed PDBs; omit it for plain PDBs.
 
-**Choosing the subset.** Edit `rules` in `cpbase_selection.json`; rules run in order on the remaining complexes. Template thresholds are examples and can be changed.
+**Choosing the subset.** Edit `rules` in `scripts/rebuild_cpbase_template.json`; rules run in order on the remaining complexes. Template thresholds are examples and can be changed.
 
 | Rule | Purpose | Example |
 | --- | --- | --- |
