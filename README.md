@@ -75,16 +75,16 @@ python3 scripts/rebuild_cpbase.py \
 
 `--dry-run` does not read source coordinates or validate their atoms. Each output directory must not already exist. `--gzip` writes compressed PDBs; omit it for plain PDBs.
 
-**Choosing the subset.** Edit the ordered `rules` list in `cpbase_selection.json`. The supplied template first keeps `Length` 5–12, `relBSA >= 0.35`, `SheetRatio <= 0.5`, and both `rel_n_rBSA` and `rel_c_rBSA >= 0.4`. It then keeps complexes with `relBSA` at least 90% of the surviving cluster maximum, and finally selects one complex with the largest `relBSA` per cluster. These thresholds are examples, not mandatory dataset filters.
+**Choosing the subset.** Edit `rules` in `cpbase_selection.json`; rules run in order on the remaining complexes. Template thresholds are examples and can be changed.
 
 | Rule | Purpose | Example |
 | --- | --- | --- |
-| `range` | Filter individual complexes by a numeric metric | `{"op":"range","field":"Length","min":5,"max":12}` |
-| `top` | Keep the best N complexes (or a fraction) within each cluster | `{"op":"top","field":"relBSA","n":3,"order":"desc"}` |
-| `relative` | Compare each complex to a statistic of its current cluster | `{"op":"relative","field":"relBSA","stat":"max","mode":"ratio","min":0.9}` |
-| `aggregate` | Keep whole clusters based on their current members | `{"op":"aggregate","stat":"count","min":3}` |
+| `range` | Numeric filter | `{"op":"range","field":"Length","min":5,"max":12}` |
+| `top` | Top N per cluster | `{"op":"top","field":"relBSA","n":3,"order":"desc"}` |
+| `relative` | Fraction of cluster maximum | `{"op":"relative","field":"relBSA","stat":"max","mode":"ratio","min":0.9}` |
+| `aggregate` | Cluster-size filter | `{"op":"aggregate","stat":"count","min":3}` |
 
-Rules execute in list order, and every rule sees only the survivors of previous rules. A cluster is `(Source_ID, Domain_ID, Cluster_ID)`, not a receptor sequence cluster. For example, put a cluster-size filter **before** `top` if you want to count members before selecting representatives. `min`/`max` include the boundary; `gt`/`lt` exclude it. Remove the `top` rule to keep all complexes passing the preceding filters, or use `{"rules": []}` to select all metadata rows. With the template's final top-1 rule, the preceding 90%-of-maximum rule does not change the final winner.
+Clusters are defined by `(Source_ID, Domain_ID, Cluster_ID)`. Apply cluster-size filters before `top`; remove `top` to keep all passing complexes. Use `{"rules":[]}` to select all rows. See the [full guide](scripts/README_rebuild_cpbase.md) for more options.
 
 **Inputs and results.** ResID maps must contain `Source_ID`, `Domain_ID`, `Cluster_ID`, `Ligand_ID`, `receptor_res_ids`, and `ligand_res_ids`. Historical invalid IDs such as `NA` must be repaired before reconstruction. Source structures must retain the original residue numbering; use full `.pdb`/`.pdb.gz` files, not domain-cropped PDBs or tar archives. For nonstandard filenames, use `--source-manifest` as described in the [full reconstruction guide](scripts/README_rebuild_cpbase.md).
 
@@ -95,30 +95,24 @@ AFDB-multimer has been released recently, but it is not included in the current 
 
 ## 🎲 Sample CPcap
 
-The CPbase datasets provide interaction interfaces and terminal amide geometries. Now we generate plausible conformations for capping structures. To automatically get a proper number of conformation generation, we sample conformations in batch and check the number of clusters increased after a new batch of conformations is generated. When the increase number declines to a certain extent, we suppose that the plausible conformations have been adequately explored, and stop conformation sampling.
-
-You may run this protocol for conformation sampling:
+Generate and minimize CPcap conformers in batches, stopping when cluster growth saturates.
 
 ```bash
-python CappingConformerAuto.py --name name_of_the_capping --smiles 'smiles' --out out_path -p num_processors_used_in_minimization_and_clustering --schrodinger-run path_for_schrodinger/run
+python SampleCPCap/CappingConformerAuto.py \
+  --name cap_name --smiles 'smiles' --out out_path \
+  -p 8 --schrodinger-run /path/to/schrodinger/run
 ```
 
-Useful arguments include:
+| Option | Purpose | Example |
+| --- | --- | --- |
+| `--batch-size` | Conformers per batch | `--batch-size 2000` |
+| `--max-batches` | Sampling limit | `--max-batches 80` |
+| `--cluster-rmsd` | Clustering RMSD cutoff | `--cluster-rmsd 0.5` |
+| `--min-cluster-increase`, `--patience` | Stop on low cluster growth | `--min-cluster-increase 5 --patience 3` |
+| `--energy-keep-percent` | Keep lowest-energy fraction (%) | `--energy-keep-percent 90` |
+| `--seed-start` | First batch seed | `--seed-start 123` |
 
-* `--batch-size` controls the number of conformers generated per batch, for example `--batch-size 2000`.
-* `--max-batches` sets the maximum number of batches to sample, for example `--max-batches 80`.
-* `--seed-start` sets the random seed for the first batch; later batches use incremented seeds, for example `--seed-start 123`.
-* `--cluster-rmsd` sets the RMSD cutoff used for Butina clustering, for example `--cluster-rmsd 0.5`.
-* `--min-cluster-increase` and `--patience` define when cluster growth has saturated enough to stop, for example `--min-cluster-increase 5 --patience 3`.
-* `--energy-keep-percent` keeps only the lowest-energy relaxed conformers by percentile, for example `--energy-keep-percent 90`; set it to `100` to disable this energy filter.
-* `--python` sets the Python executable used to run `CappingGen.py`, for example `--python python3` or `--python /path/to/python`.
-* `--cluster-processors` sets the number of processes used for RMSD clustering, for example `--cluster-processors 8`; by default, it follows `--processors`.
-* `--keep-batches` retains intermediate batch files for debugging or inspection; it is a switch and does not take a value.
-* `--ligand-asl` sets the Schrodinger ASL expression used to identify the ligand during relaxation, for example `--ligand-asl 'chain.name "A"'`.
-* `--hydrogen-scope` controls whether all hydrogens or only ligand hydrogens are adjusted during relaxation; options are `all` and `ligand`.
-* `--max-steps` sets the maximum number of minimization steps in Schrodinger relaxation, for example `--max-steps 300`.
-* `--grad-conv` sets the gradient convergence threshold for stopping minimization, for example `--grad-conv 0.05`.
-* `--dielectric` sets the dielectric constant used during relaxation, for example `--dielectric 80`.
+Set `--energy-keep-percent 100` to disable energy filtering. Use `--help` for advanced sampling and minimization options.
 
 ## 🔗 Merge CPcap and CPbase
 Now we can construct cyclic peptide binders by searching CPbase-CPcap pairs whose terminal amides align to each other.
@@ -160,3 +154,7 @@ The relaxed output directory contains the final cyclic peptide binder complexes.
 ## 📈 Evaluations
 
 We evaluate complex structures using tools including BSA, PLIP, GRAVY, Vina and FoldX. The SASA, PLIP, Vina, and FoldX scripts use `--input-type` to select the expected input layout, such as `pdb`, `cpsea2`, `cpsea2afdb`, `pepbench`, or `pdb-chain`. We also evaluate redundancy by clustering complexes based on receptor sequences using MMSeqs2. These analysis scripts can found in the `Evaluations` directory.
+
+## 📞 Contact
+
+Please contect yangzy23@mails.tsinghua.edu.cn if you have any questions. Thank you for your interest in our CPSea2!
