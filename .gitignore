@@ -34,3 +34,7 @@ README_*
 # Publish the reconstruction and residue-map repair guides
 !/scripts/README_rebuild_cpbase.md
 !/scripts/README_resid_repair.md
+
+# Python bytecode caches
+__pycache__/
+*.py[cod]
