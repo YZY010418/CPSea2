@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Filter CPbase metadata with ordered rules and rebuild from full AFDB PDBs.
 
-Python 3.10+, standard library only. See README_rebuild_cpbase.md.
+Python 3.10+, standard library only.
 """
 from __future__ import annotations
 
@@ -255,7 +255,7 @@ def join_resids(db, paths):
             try:
                 identity = [row['Source_ID'], *[int(row[k]) for k in IDS[1:]]]
             except ValueError as exc:
-                raise ValueError(f'{path}:{number}: invalid domain/cluster/ligand ID; repair map first') from exc
+                raise ValueError(f'{path}:{number}: invalid domain/cluster/ligand ID') from exc
             batch.append([row['receptor_res_ids'], row['ligand_res_ids'], *identity])
             if len(batch) >= 10000:
                 insert_resids(db, batch)

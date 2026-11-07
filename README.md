@@ -84,9 +84,9 @@ python3 scripts/rebuild_cpbase.py \
 | `relative` | Fraction of cluster maximum | `{"op":"relative","field":"relBSA","stat":"max","mode":"ratio","min":0.9}` |
 | `aggregate` | Cluster-size filter | `{"op":"aggregate","stat":"count","min":3}` |
 
-Clusters are defined by `(Source_ID, Domain_ID, Cluster_ID)`. Apply cluster-size filters before `top`; remove `top` to keep all passing complexes. Use `{"rules":[]}` to select all rows. See the [full guide](scripts/README_rebuild_cpbase.md) for more options.
+Clusters are defined by `(Source_ID, Domain_ID, Cluster_ID)`. Apply cluster-size filters before `top`; remove `top` to keep all passing complexes. Use `{"rules":[]}` to select all rows.
 
-**Inputs and results.** ResID maps must contain `Source_ID`, `Domain_ID`, `Cluster_ID`, `Ligand_ID`, `receptor_res_ids`, and `ligand_res_ids`. Historical invalid IDs such as `NA` must be repaired before reconstruction. Source structures must retain the original residue numbering; use full `.pdb`/`.pdb.gz` files, not domain-cropped PDBs or tar archives. For nonstandard filenames, use `--source-manifest` as described in the [full reconstruction guide](scripts/README_rebuild_cpbase.md).
+**Inputs and results.** ResID maps must contain `Source_ID`, `Domain_ID`, `Cluster_ID`, `Ligand_ID`, `receptor_res_ids`, and `ligand_res_ids`. Source structures must retain the original residue numbering; use full `.pdb`/`.pdb.gz` files, not domain-cropped PDBs or tar archives. For nonstandard filenames, use `--source-manifest`; see `python3 scripts/rebuild_cpbase.py --help` for options.
 
 Successful structures appear under `structures/<shard>/`, with receptor chain `R`, ligand chain `L`, and ACE/NME caps reconstructed from the recorded precursor residues. `selected.tsv` records selected complexes and paths; `summary.json` records counts after each rule and reconstruction totals; `errors.tsv` records failed complexes. A reconstruction run with failures exits with status 1, so selection alone does not imply successful reconstruction. The output also preserves `config.json` and an audit database, `selection.sqlite`.
 
